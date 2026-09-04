@@ -7,7 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import BloubBot from './components/BloubBot.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import ContextMenu from './components/ContextMenu.vue';
-import { settings } from './composables/useSettings';
+import { settings, isDark } from './composables/useSettings';
 
 const appWindow = getCurrentWindow();
 
@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
     class="w-full h-full flex items-center justify-center select-none overflow-hidden relative"
     :class="[
       isSettingsOpen ? '' : 'cursor-grab active:cursor-grabbing',
-      settings.theme === 'dark' ? 'dark' : ''
+      isDark ? 'dark' : ''
     ]"
     style="background: transparent;"
   >
@@ -171,6 +171,7 @@ onBeforeUnmount(() => {
         :eye-color="settings.eyeColor"
         :color="settings.color"
         :shape="settings.shape"
+        :expression="settings.expression"
         :size="settings.avatarSize"
         :follow="settings.followCursor"
         data-tauri-drag-region
@@ -181,7 +182,7 @@ onBeforeUnmount(() => {
     <ContextMenu
       v-if="isContextMenuOpen && !isSettingsOpen"
       :position="contextMenuPos"
-      :theme="settings.theme"
+      :dark="isDark"
       @close="closeContextMenu"
       @open-chat="openDioxusChat"
       @open-options="openSettings"

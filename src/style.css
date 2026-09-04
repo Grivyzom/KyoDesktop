@@ -70,7 +70,6 @@ body::-webkit-scrollbar,
 .custom-scrollbar::-webkit-scrollbar-thumb {
     background-color: rgba(113, 113, 122, 0.3);
     border-radius: 9999px;
-    transition: background-color 0.15s ease-in-out;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
@@ -83,9 +82,287 @@ body::-webkit-scrollbar,
 .gpu-composite {
     transform: translateZ(0);
     backface-visibility: hidden;
-    perspective: 1000px;
 }
 
 .contain-render {
     contain: layout paint;
+}
+
+/* --------------------------------------------------
+   Panel de ajustes de Kyo
+
+   Todo el tema vive en variables sobre el contenedor raiz: el componente Vue
+   solo alterna la clase `.dark` una vez, en lugar de reevaluar un ternario de
+   tema en cada uno de los cien nodos del panel cada vez que cambia un ajuste.
+-------------------------------------------------- */
+.kyo-panel {
+    --kyo-bg: #ffffff;
+    --kyo-bg-2: #f8fafc;
+    --kyo-bg-3: #f1f5f9;
+    --kyo-fg: #0f172a;
+    --kyo-muted: #64748b;
+    --kyo-border: #e2e8f0;
+    --kyo-hover: #f1f5f9;
+    --kyo-accent: #2563eb;
+    --kyo-accent-soft: rgba(37, 99, 235, 0.1);
+    --kyo-track: rgba(148, 163, 184, 0.35);
+    --kyo-danger: #dc2626;
+
+    color: var(--kyo-fg);
+    background-color: var(--kyo-bg);
+}
+
+.kyo-panel.dark {
+    --kyo-bg: #12141a;
+    --kyo-bg-2: #171921;
+    --kyo-bg-3: #1b1e28;
+    --kyo-fg: #e4e4e7;
+    --kyo-muted: #a1a1aa;
+    --kyo-border: #26262d;
+    --kyo-hover: #1f222b;
+    --kyo-accent: #60a5fa;
+    --kyo-accent-soft: rgba(96, 165, 250, 0.12);
+    --kyo-track: rgba(82, 82, 91, 0.75);
+    --kyo-danger: #f87171;
+}
+
+/* Contenedores de ajuste: borde nitido, SIN sombra. */
+.kyo-card {
+    background-color: var(--kyo-bg-2);
+    border: 1px solid var(--kyo-border);
+    border-radius: 16px;
+    box-shadow: none;
+}
+
+.kyo-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.kyo-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.kyo-hint {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--kyo-muted);
+}
+
+.kyo-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--kyo-accent);
+    background-color: var(--kyo-accent-soft);
+    border-radius: 8px;
+    padding: 3px 8px;
+    white-space: nowrap;
+}
+
+.kyo-divider {
+    border-color: var(--kyo-border);
+}
+
+.kyo-canvas {
+    background-color: var(--kyo-bg-3);
+    border-top: 1px solid var(--kyo-border);
+    border-bottom: 1px solid var(--kyo-border);
+}
+
+.kyo-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--kyo-muted);
+    background-color: var(--kyo-bg-3);
+    border: 1px solid var(--kyo-border);
+    border-radius: 10px;
+    padding: 4px 8px;
+}
+
+.kyo-chip:hover {
+    color: var(--kyo-fg);
+    background-color: var(--kyo-hover);
+}
+
+/* Boton de navegacion lateral */
+.kyo-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+    color: var(--kyo-muted);
+    border: 1px solid transparent;
+}
+
+.kyo-nav:hover {
+    background-color: var(--kyo-hover);
+    color: var(--kyo-fg);
+}
+
+.kyo-nav-on,
+.kyo-nav-on:hover {
+    color: var(--kyo-accent);
+    background-color: var(--kyo-accent-soft);
+    border-color: var(--kyo-border);
+    font-weight: 600;
+}
+
+/* Vineta del editor Bloub */
+.kyo-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 4px 6px;
+    border-radius: 12px;
+    border: 1px solid var(--kyo-border);
+    background-color: var(--kyo-bg-3);
+    color: var(--kyo-muted);
+}
+
+.kyo-tile:hover {
+    background-color: var(--kyo-hover);
+    color: var(--kyo-fg);
+}
+
+.kyo-tile-on,
+.kyo-tile-on:hover {
+    border-color: var(--kyo-accent);
+    background-color: var(--kyo-accent-soft);
+    color: var(--kyo-accent);
+}
+
+.kyo-tile-label {
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.1;
+}
+
+.kyo-swatch {
+    width: 30px;
+    height: 30px;
+    border-radius: 9999px;
+    border: 2px solid var(--kyo-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.kyo-swatch-on {
+    border-color: var(--kyo-accent);
+}
+
+.kyo-input {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    color: var(--kyo-fg);
+    background-color: var(--kyo-bg-3);
+    border: 1px solid var(--kyo-border);
+    outline: none;
+}
+
+.kyo-input:focus-visible {
+    border-color: var(--kyo-accent);
+}
+
+.kyo-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--kyo-border);
+    color: var(--kyo-fg);
+    background-color: var(--kyo-bg-3);
+}
+
+.kyo-btn:hover {
+    background-color: var(--kyo-hover);
+}
+
+.kyo-btn-danger {
+    color: #ffffff;
+    background-color: #dc2626;
+    border-color: #dc2626;
+}
+
+.kyo-btn-danger:hover {
+    background-color: #b91c1c;
+}
+
+.kyo-check {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--kyo-accent);
+    cursor: pointer;
+}
+
+/* --------------------------------------------------
+   Deslizador
+
+   Pista y pulgar planos: sin `box-shadow` ni `filter`, el arrastre solo repinta
+   la banda del control en vez de forzar una nueva capa compuesta por cuadro.
+-------------------------------------------------- */
+.kyo-range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--kyo-track);
+    outline: none;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.kyo-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 9999px;
+    background: var(--kyo-accent);
+    border: none;
+    box-shadow: none;
+}
+
+.kyo-range::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 9999px;
+    background: var(--kyo-accent);
+    border: none;
+    box-shadow: none;
+}
+
+.kyo-range:focus-visible {
+    box-shadow: 0 0 0 2px var(--kyo-accent-soft);
+}
+
+/* --------------------------------------------------
+   Accesibilidad: respeta la preferencia de movimiento reducido
+-------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        transition-duration: 0.001ms !important;
+    }
 }

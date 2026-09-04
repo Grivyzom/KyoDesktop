@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import KyoIcon from './KyoIcon.vue';
 
 const props = defineProps<{
   position: { x: number; y: number };
-  theme: 'light' | 'dark' | 'system';
+  /** Tema ya resuelto por el padre: el menu no vuelve a calcularlo. */
+  dark: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -49,63 +51,32 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="custom-context-menu fixed z-50 w-[140px] rounded-2xl p-1.5 shadow-2xl border select-none transition-all duration-100"
-    :class="[
-      props.theme === 'light'
-        ? 'bg-white text-slate-800 border-slate-200'
-        : 'bg-[#181a24] text-zinc-100 border-zinc-700/80'
-    ]"
+    class="custom-context-menu kyo-panel fixed z-50 w-[150px] rounded-2xl p-1.5 border"
+    :class="props.dark ? 'dark' : ''"
     :style="{
       top: `${props.position.y}px`,
       left: `${props.position.x}px`,
+      borderColor: 'var(--kyo-border)',
+      backgroundColor: 'var(--kyo-bg)',
     }"
     @click.stop
     @mousedown.stop
   >
-    <!-- Opción: Abrir Chat -->
-    <button
-      type="button"
-      @click="handleOpenChat"
-      class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center gap-2"
-      :class="[
-        props.theme === 'light'
-          ? 'hover:bg-indigo-50 text-slate-700 hover:text-indigo-600'
-          : 'hover:bg-indigo-500/15 text-zinc-200 hover:text-indigo-400'
-      ]"
-    >
-      <span class="text-xs">💬</span>
-      <span>Abrir Chat</span>
+    <button type="button" class="kyo-nav" @click="handleOpenChat">
+      <KyoIcon name="chat" class="w-3.5 h-3.5" />
+      <span>Abrir chat</span>
     </button>
 
-    <!-- Opción: Opciones / Ajustes -->
-    <button
-      type="button"
-      @click="handleOptions"
-      class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center gap-2"
-      :class="[
-        props.theme === 'light'
-          ? 'hover:bg-blue-50 text-slate-700 hover:text-blue-600'
-          : 'hover:bg-blue-500/15 text-zinc-200 hover:text-blue-400'
-      ]"
-    >
-      <span class="text-xs">⚙️</span>
+    <button type="button" class="kyo-nav" @click="handleOptions">
+      <KyoIcon name="gear" class="w-3.5 h-3.5" />
       <span>Opciones</span>
     </button>
 
-    <!-- Separador -->
-    <div
-      class="my-1 border-t"
-      :class="props.theme === 'light' ? 'border-slate-100' : 'border-zinc-800/80'"
-    />
+    <div class="my-1 border-t kyo-divider" />
 
-    <!-- Opción: Cerrar kyo -->
-    <button
-      type="button"
-      @click="handleQuit"
-      class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center gap-2 text-red-500 hover:bg-red-500/10 hover:text-red-400"
-    >
-      <span class="text-xs font-bold">✕</span>
-      <span>Cerrar kyo</span>
+    <button type="button" class="kyo-nav text-red-500" @click="handleQuit">
+      <KyoIcon name="power" class="w-3.5 h-3.5" />
+      <span>Cerrar Kyo</span>
     </button>
   </div>
 </template>
