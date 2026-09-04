@@ -20,18 +20,7 @@ let unlistenOpenSettings: (() => void) | null = null;
 function onContextMenu(e: MouseEvent) {
   e.preventDefault();
   if (isSettingsOpen.value) return;
-
-  // Menú contextual flotante en la UI:
-  // Se restringen las coordenadas dentro de la ventana de 220x220 px
-  // para que siempre esté 100% visible, sin recortes y con contenedor sólido.
-  const menuWidth = 140;
-  const menuHeight = 78;
-  const padding = 10;
-  const x = Math.min(Math.max(padding, e.clientX - 15), 220 - menuWidth - padding);
-  const y = Math.min(Math.max(padding, e.clientY - 15), 220 - menuHeight - padding);
-
-  contextMenuPos.value = { x, y };
-  isContextMenuOpen.value = true;
+  openDioxusChat();
 }
 
 function closeContextMenu() {
@@ -81,6 +70,12 @@ async function closeSettings() {
 }
 
 async function startDrag(e: MouseEvent) {
+  // Clic derecho (e.button === 2) abre inmediatamente Dioxus Chat
+  if (e.button === 2) {
+    e.preventDefault();
+    openDioxusChat();
+    return;
+  }
   if (isContextMenuOpen.value) {
     closeContextMenu();
     return;
@@ -151,7 +146,7 @@ onBeforeUnmount(() => {
   <main
     data-tauri-drag-region
     @mousedown="startDrag"
-    @contextmenu="onContextMenu"
+    @contextmenu.prevent="onContextMenu"
     class="w-full h-full flex items-center justify-center select-none overflow-hidden relative"
     :class="[
       isSettingsOpen ? '' : 'cursor-grab active:cursor-grabbing',
@@ -164,6 +159,7 @@ onBeforeUnmount(() => {
       v-if="!isSettingsOpen"
       data-tauri-drag-region
       @dblclick="openDioxusChat"
+      @contextmenu.prevent="onContextMenu"
       class="flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
     >
       <BloubBot

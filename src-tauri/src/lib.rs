@@ -115,6 +115,9 @@ mod win32_chat {
         fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: BOOL) -> BOOL;
         fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(HWND, isize) -> BOOL, lParam: isize) -> BOOL;
         fn GetWindowTextW(hWnd: HWND, lpString: *mut u16, nMaxCount: i32) -> i32;
+        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: BOOL, dwProcessId: u32) -> isize;
+        fn CloseHandle(hObject: isize) -> BOOL;
+        fn QueryFullProcessImageNameW(hProcess: isize, dwFlags: u32, lpExeName: *mut u16, lpdwSize: *mut u32) -> BOOL;
     }
 
     const SW_RESTORE: i32 = 9;
@@ -122,15 +125,41 @@ mod win32_chat {
 
     unsafe extern "system" fn enum_win_proc(hwnd: HWND, lparam: isize) -> BOOL {
         let out_hwnd = lparam as *mut HWND;
+
+        // 1. Detección por título de ventana
         let mut buffer = [0u16; 256];
         let len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), 256);
         if len > 0 {
             let text = String::from_utf16_lossy(&buffer[..len as usize]);
-            if text.contains("Dioxus Chat") {
+            if text.contains("Dioxus Chat") || text.contains("Dioxus") {
                 *out_hwnd = hwnd;
                 return 0; // detener enumeración
             }
         }
+
+        // 2. Detección por proceso ejecutable ("desktop.exe")
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid != 0 {
+            const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+            let hproc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if hproc != 0 {
+                let mut path_buf = [0u16; 1024];
+                let mut size: u32 = 1024;
+                if QueryFullProcessImageNameW(hproc, 0, path_buf.as_mut_ptr(), &mut size) != 0 && size > 0 {
+                    let exe_path = String::from_utf16_lossy(&path_buf[..size as usize]).to_lowercase();
+                    if (exe_path.ends_with("desktop.exe") || exe_path.contains("dioxus-chat"))
+                        && !exe_path.contains("tauri")
+                        && !exe_path.contains("explorer") {
+                        *out_hwnd = hwnd;
+                        CloseHandle(hproc);
+                        return 0;
+                    }
+                }
+                CloseHandle(hproc);
+            }
+        }
+
         1 // continuar
     }
 
@@ -184,7 +213,6 @@ mod win32_chat {
         if let Ok(mut cur) = std::env::current_exe() {
             for _ in 0..5 {
                 if cur.pop() {
-                    candidates.push(cur.join("dioxus-chat/target/dx/desktop/debug/windows/app/desktop.exe"));
                     candidates.push(cur.join("dioxus-chat/target/release/desktop.exe"));
                     candidates.push(cur.join("dioxus-chat/target/debug/desktop.exe"));
                     candidates.push(cur.join("dioxus-chat/desktop.exe"));
@@ -194,15 +222,14 @@ mod win32_chat {
 
         // 2. Relativo al directorio de trabajo
         if let Ok(cwd) = std::env::current_dir() {
-            candidates.push(cwd.join("dioxus-chat/target/dx/desktop/debug/windows/app/desktop.exe"));
             candidates.push(cwd.join("dioxus-chat/target/release/desktop.exe"));
             candidates.push(cwd.join("dioxus-chat/target/debug/desktop.exe"));
+            candidates.push(cwd.join("dioxus-chat/desktop.exe"));
         }
 
         // 3. Rutas fijas de desarrollo
-        candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\dx\desktop\debug\windows\app\desktop.exe"));
-        candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\debug\desktop.exe"));
         candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\release\desktop.exe"));
+        candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\debug\desktop.exe"));
 
         for p in candidates {
             if p.exists() && p.is_file() {
@@ -225,7 +252,7 @@ mod win32_chat {
 
         // Monitoreo en segundo plano para enfocar la ventana cuando termine de iniciar
         std::thread::spawn(|| {
-            for _ in 0..20 {
+            for _ in 0..25 {
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 unsafe {
                     if let Some(hwnd) = find_dioxus_chat_window() {
