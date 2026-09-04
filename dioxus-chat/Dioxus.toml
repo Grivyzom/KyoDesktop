@@ -1,0 +1,6 @@
+[application]
+name = "desktop"
+default_platform = "desktop"
+
+[desktop]
+always_on_top = false

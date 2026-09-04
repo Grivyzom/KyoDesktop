@@ -1,0 +1,61 @@
+# ==============================================================================
+# Kyo Desktop Agent - .gitignore
+# ==============================================================================
+
+# Node / Frontend dependencies & build artifacts
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm/
+.eslintcache
+
+# Rust / Cargo build artifacts (Tauri & Dioxus)
+**/target/
+**/*.rs.bk
+target/
+
+# Tauri generated files
+**/gen/schemas/
+
+# External cloned reference repositories
+bloub/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# IDEs & Editor files
+.vs/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.user
+*.userosv
+*.sln.docstates
+*.slnx.sqlite
+*.vsidx
+*.sw?
+*.ntvs*
+*.njsproj
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
