@@ -46,11 +46,11 @@ fn get_cursor_relative(window: tauri::Window) -> (f64, f64) {
 #[tauri::command]
 async fn show_context_menu(window: WebviewWindow) -> Result<(), String> {
     let menu = MenuBuilder::new(&window)
-        .text("open_chat", "💬 Abrir Chat")
+        .text("open_chat", "Abrir chat")
         .separator()
-        .text("options", "⚙️ Opciones")
+        .text("options", "Opciones")
         .separator()
-        .text("quit", "Cerrar kyo")
+        .text("quit", "Cerrar Kyo")
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -299,10 +299,10 @@ pub fn run() {
         })
         .setup(|app| {
             // 1. Crear items del menú contextual de la bandeja
-            let chat_item = MenuItem::with_id(app, "open_chat", "💬 Abrir Chat", true, None::<&str>)?;
-            let opt_item = MenuItem::with_id(app, "options", "⚙️ Opciones", true, None::<&str>)?;
+            let chat_item = MenuItem::with_id(app, "open_chat", "Abrir chat", true, None::<&str>)?;
+            let opt_item = MenuItem::with_id(app, "options", "Opciones", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Cerrar kyo", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Cerrar Kyo", true, None::<&str>)?;
 
             // 2. Construir menú
             let menu = Menu::with_items(app, &[&chat_item, &opt_item, &separator, &quit_item])?;
@@ -312,7 +312,7 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false) // Clic derecho abre el menú
-                .tooltip("kyo")
+                .tooltip("Kyo")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open_chat" | "ctx-chat" => {
                         tauri::async_runtime::spawn(async {

@@ -1,4 +1,4 @@
-import { reactive, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 
 export interface AppSettings {
   // General
@@ -71,8 +71,8 @@ function loadSettings(): AppSettings {
 
 export const settings = reactive<AppSettings>(loadSettings());
 
-// Auto-save with 250ms debounce: avoids blocking the main thread on every
-// slider tick or rapid keypress while still feeling instant to the user.
+// Auto-guardado con 250 ms de rebote: evita bloquear el hilo principal en cada
+// tic de deslizador o pulsacion rapida sin dejar de sentirse instantaneo.
 let saveDebounce: ReturnType<typeof setTimeout> | null = null;
 watch(
   settings,
@@ -87,6 +87,29 @@ watch(
     }, 250);
   },
   { deep: true }
+);
+
+/**
+ * Preferencia del sistema, escuchada una sola vez para todo el proceso.
+ *
+ * El tema resuelto se expone como un unico booleano: la interfaz aplica la
+ * clase `dark` en la raiz del panel y todo lo demas cuelga de variantes CSS
+ * estaticas. Antes cada nodo llevaba su propio ternario `theme === 'light'`,
+ * asi que un cambio cualquiera de ajustes obligaba a reevaluar decenas de
+ * expresiones de clase en el mismo cuadro.
+ */
+const prefersDark = ref(true);
+
+if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+  const query = window.matchMedia('(prefers-color-scheme: dark)');
+  prefersDark.value = query.matches;
+  query.addEventListener('change', (e) => {
+    prefersDark.value = e.matches;
+  });
+}
+
+export const isDark = computed(() =>
+  settings.theme === 'system' ? prefersDark.value : settings.theme === 'dark'
 );
 
 export function resetSettings() {

@@ -204,6 +204,17 @@ let globalDx = 0
 let globalDy = 0
 let lastCursorMove = 0
 let inFlightCursor = false
+/**
+ * Cadence de l'interrogation du pointeur natif.
+ *
+ * Une image sur soixante, c'etait un aller-retour IPC vers Rust a CHAQUE image :
+ * le pont serialise, reveille le thread principal de la fenetre et repasse par
+ * l'evenement — soixante fois par seconde, pour un curseur qui ne bouge jamais
+ * assez vite pour que 40 ms se voient. Le regard reste fluide, la machine
+ * respire.
+ */
+const CURSOR_POLL = 0.04
+let lastCursorPoll = -Infinity
 
 async function trackGlobalCursor() {
   if (inFlightCursor) return
@@ -252,8 +263,11 @@ function aim() {
     lastCursorMove = clock
   }
 
-  // Interroge le pointeur natif du systeme (moniteurs multiples)
-  trackGlobalCursor()
+  // Interroge le pointeur natif du systeme (moniteurs multiples), a cadence bornee
+  if (clock - lastCursorPoll >= CURSOR_POLL) {
+    lastCursorPoll = clock
+    trackGlobalCursor()
+  }
 
   // Portee de normalisation a l'echelle du moniteur (ou des moniteurs)
   const demiLargeur = Math.max(700, (window.screen.availWidth || 1920) / 2)
