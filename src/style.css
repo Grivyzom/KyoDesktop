@@ -1,6 +1,21 @@
 @import "tailwindcss";
 
 /* --------------------------------------------------
+   Tipografía empaquetada de Kyo
+-------------------------------------------------- */
+@font-face {
+    font-family: 'Kyo';
+    src: local('Kyo'), url('./assets/fonts/Kyo-Regular.ttf') format('truetype');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@theme {
+    --font-sans: var(--kyo-font-family, 'Kyo', system-ui, -apple-system, sans-serif);
+}
+
+/* --------------------------------------------------
    CSS Reset & Performance Optimization
 -------------------------------------------------- */
 *,
@@ -8,18 +23,29 @@
 *::after {
     box-sizing: border-box;
     -webkit-tap-highlight-color: transparent;
+    font-family: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+    font-family: inherit;
 }
 
 :root {
+    --kyo-font-family: 'Kyo', system-ui, -apple-system, sans-serif;
     color-scheme: dark light;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    font-family: var(--kyo-font-family) !important;
 }
 
 html,
 body,
 #app {
+    font-family: var(--kyo-font-family) !important;
     margin: 0 !important;
     padding: 0 !important;
     width: 100% !important;
@@ -110,6 +136,7 @@ body::-webkit-scrollbar,
 
     color: var(--kyo-fg);
     background-color: var(--kyo-bg);
+    font-family: var(--kyo-font-family);
 }
 
 .kyo-panel.dark {

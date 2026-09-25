@@ -10,6 +10,64 @@
 
 use dioxus::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use eventsource_stream::Eventsource;
+use futures_util::StreamExt;
+
+// ============================================================================
+// KYO AI PROTOCOL DATA MODELS (POST /api/v1/ai/ask/stream)
+// ============================================================================
+
+#[derive(Serialize, Debug)]
+pub struct AskRequest {
+    pub question: String,
+    pub use_context: bool,
+    pub history: Vec<HistoryMessage>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryMessage {
+    pub role: String, // "user" | "assistant"
+    pub content: String,
+}
+
+/// event: delta -> { "text": "..." }
+#[derive(Deserialize, Debug)]
+pub struct DeltaPayload {
+    pub text: String,
+}
+
+/// event: sources -> { "sources": [ { "title": "...", "score": 0.8 } ] }
+#[derive(Deserialize, Debug)]
+pub struct SourcesPayload {
+    pub sources: Vec<SourceItem>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SourceItem {
+    pub title: String,
+    pub score: Option<f64>,
+}
+
+/// event: actions -> { "actions": [...] }
+#[derive(Deserialize, Debug)]
+pub struct ActionsPayload {
+    pub actions: Vec<serde_json::Value>,
+}
+
+/// event: done -> { "answer": "...", "model": "...", "usage": {...} }
+#[derive(Deserialize, Debug)]
+pub struct DonePayload {
+    pub answer: Option<String>,
+    pub model: Option<String>,
+}
+
+/// event: error -> { "error": "..." }
+#[derive(Deserialize, Debug)]
+pub struct ErrorPayload {
+    pub error: String,
+}
 
 // ============================================================================
 // 1. DATA MODELS & STRONG TYPING
@@ -126,32 +184,15 @@ pub fn trigger_auto_scroll() {
 // 2. ROOT CONTAINER & CONTROLLER (ChatContainer)
 // ============================================================================
 
-const CHAT_CSS: Asset = asset!("/assets/styling/chat.css");
+const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 
 /// Main layout shell with split viewport (header, scrollable message stream, and sticky input dock).
 #[component]
 pub fn ChatContainer() -> Element {
-    // Reactive root states
-    let mut messages = use_signal(|| {
-        vec![
-            Message::system("AI Agent Chat initialized. Connected to Rust 2024 inference engine."),
-            Message {
-                id: "welcome-1".to_string(),
-                role: Role::Assistant,
-                content: "Hello! I am your Rust-powered AI Agent. Ask me to write code, review architectures, or run automated tool workflows.".to_string(),
-                timestamp: current_timestamp_secs(),
-                status: MessageStatus::Sent,
-                tool_calls: vec![
-                    ToolCall {
-                        id: "tc-init".to_string(),
-                        name: "environment_inspector".to_string(),
-                        args: r#"{"runtime": "dioxus", "version": "0.6/0.7", "edition": "2024"}"#.to_string(),
-                        output: Some(r#"{"status": "ready", "memory_allocator": "jemalloc", "simd": true}"#.to_string()),
-                    }
-                ],
-            }
-        ]
-    });
+    let active_view = try_use_context::<Signal<crate::models::ActiveView>>();
+
+    // Reactive root states: No hardcoded chats or mock messages
+    let mut messages = use_signal(Vec::<Message>::new);
 
     let mut is_generating = use_signal(|| false);
     let mut input_text = use_signal(String::new);
@@ -194,8 +235,26 @@ pub fn ChatContainer() -> Element {
         messages.write().push(Message::user(&trimmed));
         trigger_auto_scroll();
 
-        // Check for simulated error triggering
-        let simulate_error = trimmed.starts_with("/error") || trimmed.contains("simulate error");
+        // Acotar el historial previo a los últimos 6 mensajes (tope de tokens de Kyo)
+        let history: Vec<HistoryMessage> = {
+            let msgs = messages.read();
+            msgs.iter()
+                .filter(|m| m.role == Role::User || matches!(m.role, Role::Assistant))
+                .map(|m| HistoryMessage {
+                    role: match m.role {
+                        Role::User => "user".to_string(),
+                        Role::Assistant => "assistant".to_string(),
+                        _ => "user".to_string(),
+                    },
+                    content: m.content.clone(),
+                })
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect()
+        };
 
         // Prepare placeholder for streaming assistant response
         let assistant_id = generate_unique_id();
@@ -216,62 +275,24 @@ pub fn ChatContainer() -> Element {
 
         // Spawn non-blocking background streaming task
         let task = spawn(async move {
-            if simulate_error {
-                // Simulate network latency before error
-                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            let res = stream_kyo_ask(
+                prompt_clone,
+                history,
+                target_id.clone(),
+                messages,
+                is_generating,
+            )
+            .await;
 
+            if let Err(err) = res {
+                eprintln!("[Kyo Stream Error] {err}");
                 let mut msgs = messages.write();
                 if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_id) {
-                    msg.status = MessageStatus::Error(
-                        "503 Service Unavailable: Simulated agent upstream timeout.".to_string(),
-                    );
-                }
-                is_generating.set(false);
-                generation_task.set(None);
-                trigger_auto_scroll();
-                return;
-            }
-
-            // Simulate tool call execution if the prompt mentions tools or search
-            if prompt_clone.contains("search") || prompt_clone.contains("tool") || prompt_clone.contains("code") {
-                tokio::time::sleep(std::time::Duration::from_millis(450)).await;
-
-                let mut msgs = messages.write();
-                if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_id) {
-                    msg.tool_calls.push(ToolCall {
-                        id: format!("tc-{}", generate_unique_id()),
-                        name: "cargo_analyzer".to_string(),
-                        args: format!(r#"{{"query": "{prompt_clone}", "mode": "strict"}}"#),
-                        output: Some(r#"{"diagnostics": 0, "status": "verified"}"#.to_string()),
-                    });
-                }
-                drop(msgs);
-                trigger_auto_scroll();
-            }
-
-            // Generate synthetic token stream based on user prompt
-            let response_chunks = build_mock_stream_tokens(&prompt_clone);
-
-            for chunk in response_chunks {
-                tokio::time::sleep(std::time::Duration::from_millis(45)).await;
-
-                let mut msgs = messages.write();
-                if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_id) {
-                    msg.content.push_str(chunk);
-                }
-                drop(msgs);
-                trigger_auto_scroll();
-            }
-
-            // Finalize message status
-            let mut msgs = messages.write();
-            if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_id) {
-                if msg.status == MessageStatus::Streaming {
-                    msg.status = MessageStatus::Sent;
+                    msg.status = MessageStatus::Error(err);
                 }
             }
-            drop(msgs);
 
+            // Garantizar estado inactivo al finalizar
             is_generating.set(false);
             generation_task.set(None);
             trigger_auto_scroll();
@@ -308,7 +329,10 @@ pub fn ChatContainer() -> Element {
 
     rsx! {
         // High-performance bundled local stylesheet (0ms cold-start, 100% offline)
-        document::Link { rel: "stylesheet", href: CHAT_CSS }
+        document::Style {
+            href: "chat-css".to_string(),
+            {CHAT_CSS}
+        }
 
         div {
             class: "flex flex-col h-full w-full bg-zinc-950 text-zinc-100 antialiased font-sans selection:bg-indigo-500 selection:text-white",
@@ -337,6 +361,26 @@ pub fn ChatContainer() -> Element {
 
                 div {
                     class: "flex items-center gap-2",
+                    if let Some(mut av) = active_view {
+                        button {
+                            class: "chat-header-btn flex items-center gap-1.5",
+                            title: "Volver al Dashboard de Espacios",
+                            onclick: move |_| {
+                                av.set(crate::models::ActiveView::Dashboard);
+                            },
+                            svg {
+                                class: "w-3.5 h-3.5 text-zinc-400",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "2",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                path { d: "M19 12H5M12 19l-7-7 7-7" }
+                            }
+                            span { "Dashboard" }
+                        }
+                    }
                     if *is_generating.read() {
                         div {
                             class: "flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-950/60 border border-indigo-700/50 text-indigo-300 text-xs",
@@ -782,40 +826,198 @@ pub fn ChatInput(
 }
 
 // ============================================================================
-// 8. SIMULATION STREAM HELPER (Token Chunk Generator)
+// 8. KYO BACKEND CLIENT (HTTP / SSE STREAMING)
 // ============================================================================
 
-/// Emulates realistic token-by-token emission from an AI agent endpoint.
-fn build_mock_stream_tokens(user_prompt: &str) -> Vec<&'static str> {
-    if user_prompt.to_lowercase().contains("lifetime") || user_prompt.to_lowercase().contains("rust") {
-        vec![
-            "In Rust, ",
-            "lifetimes are ",
-            "compile-time parameters ",
-            "used by the borrow checker to ",
-            "guarantee that all references ",
-            "remain valid.\n\n",
-            "Here is an idiomatic example:\n",
-            "```rust\n",
-            "fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n",
-            "    if x.len() > y.len() { x } else { y }\n",
-            "}\n",
-            "```\n\n",
-            "Notice how the generic lifetime `'a` binds the return value's validity ",
-            "to the shortest lifetime of either input reference, ",
-            "preventing dangling pointers with zero runtime overhead.",
-        ]
-    } else {
-        vec![
-            "I have processed ",
-            "your request: \"",
-            "I am orchestrating ",
-            "the Dioxus reactive signal pipeline.\n\n",
-            "```rust\n",
-            "let mut state = use_signal(|| vec![]);\n",
-            "state.write().push(\"reactive token\");\n",
-            "```\n\n",
-            "The generation completed successfully with zero allocations on the main thread.",
-        ]
+/// Resuelve la URL base: Sidecar local (si KYO_SIDECAR_PORT está presente) o Cloud Upstream.
+pub fn resolve_api_base() -> String {
+    if let Ok(port) = std::env::var("KYO_SIDECAR_PORT") {
+        if let Ok(p) = port.trim().parse::<u16>() {
+            return format!("http://127.0.0.1:{p}/api/v1");
+        }
     }
+    "https://kyo.broco.dev/api/v1".to_string()
+}
+
+/// Obtiene el token JWT desde la variable de entorno KYO_AUTH_TOKEN o del archivo %APPDATA%/kyo/session.json.
+pub fn resolve_jwt_token() -> Option<String> {
+    if let Ok(token) = std::env::var("KYO_AUTH_TOKEN") {
+        let trimmed = token.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let session_path = PathBuf::from(appdata).join("kyo").join("session.json");
+        if session_path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&session_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(token) = json.get("token").and_then(|t| t.as_str()) {
+                        return Some(token.to_string());
+                    }
+                    if let Some(token) = json.get("access_token").and_then(|t| t.as_str()) {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Consume el endpoint de streaming de IA de Kyo (POST /api/v1/ai/ask/stream) en tiempo real.
+pub async fn stream_kyo_ask(
+    prompt: String,
+    history: Vec<HistoryMessage>,
+    target_msg_id: String,
+    mut messages: Signal<Vec<Message>>,
+    mut is_generating: Signal<bool>,
+) -> Result<(), String> {
+    let api_base = resolve_api_base();
+    let token = resolve_jwt_token().unwrap_or_default();
+    let url = format!("{api_base}/ai/ask/stream");
+
+    let payload = AskRequest {
+        question: prompt,
+        use_context: true,
+        history,
+    };
+
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream");
+
+    if !token.is_empty() {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let response = req
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            is_generating.set(false);
+            format!("Error conectando con {url}: {e}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response.text().await.unwrap_or_default();
+        is_generating.set(false);
+        return Err(format!("Error {status}: {err_text}"));
+    }
+
+    let mut event_stream = response.bytes_stream().eventsource();
+
+    while let Some(event_res) = event_stream.next().await {
+        match event_res {
+            Ok(event) => {
+                match event.event.as_str() {
+                    // Fragmentos de texto en tiempo real
+                    "delta" => {
+                        if let Ok(delta) = serde_json::from_str::<DeltaPayload>(&event.data) {
+                            let mut msgs = messages.write();
+                            if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_msg_id) {
+                                msg.content.push_str(&delta.text);
+                            }
+                            drop(msgs);
+                            trigger_auto_scroll();
+                        }
+                    }
+
+                    // Fuentes RAG encontradas en el workspace
+                    "sources" => {
+                        if let Ok(src_data) = serde_json::from_str::<SourcesPayload>(&event.data) {
+                            println!("[Kyo RAG Sources] {} fuentes encontradas", src_data.sources.len());
+                        }
+                    }
+
+                    // Acciones / Tool calls de agentes ejecutadas en segundo plano
+                    "actions" => {
+                        if let Ok(actions) = serde_json::from_str::<ActionsPayload>(&event.data) {
+                            let mut msgs = messages.write();
+                            if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_msg_id) {
+                                for act in actions.actions {
+                                    let tool_name = act
+                                        .get("tool")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("tool")
+                                        .to_string();
+                                    msg.tool_calls.push(ToolCall {
+                                        id: generate_unique_id(),
+                                        name: tool_name,
+                                        args: act.to_string(),
+                                        output: None,
+                                    });
+                                }
+                            }
+                            drop(msgs);
+                            trigger_auto_scroll();
+                        }
+                    }
+
+                    // Acción MCP propuesta esperando confirmación humana
+                    "pending" => {
+                        if let Ok(pending_val) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                            println!("[Kyo Pending Action] Requiere confirmación: {:?}", pending_val);
+                            let mut msgs = messages.write();
+                            if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_msg_id) {
+                                msg.tool_calls.push(ToolCall {
+                                    id: generate_unique_id(),
+                                    name: "mcp_pending_confirmation".to_string(),
+                                    args: pending_val.to_string(),
+                                    output: Some("Acción en espera de confirmación del usuario.".to_string()),
+                                });
+                            }
+                            drop(msgs);
+                            trigger_auto_scroll();
+                        }
+                    }
+
+                    // Fin del stream: actualizar mensaje y desactivar bandera de generación
+                    "done" => {
+                        let mut msgs = messages.write();
+                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == target_msg_id) {
+                            if let Ok(done) = serde_json::from_str::<DonePayload>(&event.data) {
+                                // Fallback: si el texto consolidado viene en done (respuestas en caché)
+                                if msg.content.trim().is_empty() {
+                                    if let Some(answer) = done.answer {
+                                        msg.content = answer;
+                                    }
+                                }
+                            }
+                            msg.status = MessageStatus::Sent;
+                        }
+                        drop(msgs);
+                        is_generating.set(false);
+                        trigger_auto_scroll();
+                        break;
+                    }
+
+                    // Error retornado desde el backend
+                    "error" => {
+                        is_generating.set(false);
+                        if let Ok(err_payload) = serde_json::from_str::<ErrorPayload>(&event.data) {
+                            return Err(err_payload.error);
+                        } else {
+                            return Err(format!("Error SSE: {}", event.data));
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+            Err(err) => {
+                eprintln!("[Kyo SSE Stream Error] {err}");
+            }
+        }
+    }
+
+    is_generating.set(false);
+    Ok(())
 }

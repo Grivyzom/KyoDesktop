@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "desktop:run": "cargo run --manifest-path dioxus-chat/Cargo.toml --package desktop",
+    "desktop:build": "cargo build --manifest-path dioxus-chat/Cargo.toml --package desktop --release",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "icon": "node ./scripts/update-icon.mjs",
+    "icon:bloub": "node ./scripts/update-icon.mjs --bloub"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

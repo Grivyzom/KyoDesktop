@@ -188,8 +188,6 @@ function rendAt(t: number) {
   triggerRef(frame)
 }
 
-defineExpose({ seek, rendAt })
-
 /* ------------------------------------------------------- regard qui suit */
 
 const svg = ref<SVGSVGElement | null>(null)
@@ -487,9 +485,17 @@ onMounted(() => {
   // le curseur peut arriver deja pose (URL, cycle relu du stockage)
   apply(block.value, elapsed.value)
   raf = requestAnimationFrame(tick)
+  // Activar la animación Big Bang de aparición inicial en el primer frame compuesto
+  // (isSpawning arranca en false para no romper vignettes frozen; aquí lo encendemos)
+  isSpawning.value = true
+  spawnTimer = setTimeout(() => {
+    isSpawning.value = false
+  }, 1150)
 })
 onBeforeUnmount(() => {
   cancelAnimationFrame(raf)
+  if (spawnTimer) clearTimeout(spawnTimer)
+  if (collapseTimer) clearTimeout(collapseTimer)
   detach()
 })
 
@@ -513,6 +519,98 @@ function dotAttrs(dot: BotFrame['dots'][number]) {
       }
     : { ...common, cx: dot.x, cy: dot.y, r: dot.r }
 }
+
+/* ---------------------------------------------------- animación Big Bang & Colapso */
+
+// Comienza en false: el onMounted activa la animación sólo si el componente no es
+// una vignette fija (frozenAt === undefined). Las vignettes congeladas nunca deben
+// entrar en el flujo de animación de spawn y quedar atascadas en scale(0).
+const isSpawning = ref(false)
+const isCollapsing = ref(false)
+let spawnTimer: ReturnType<typeof setTimeout> | null = null
+let collapseTimer: ReturnType<typeof setTimeout> | null = null
+
+function triggerSpawn() {
+  if (spawnTimer) clearTimeout(spawnTimer)
+  if (collapseTimer) clearTimeout(collapseTimer)
+  isCollapsing.value = false
+  // Forzar ciclo false→true aunque ya sea false: Vue sólo puede reiniciar la
+  // animación CSS si el elemento se desmonta (isSpawning=false) y se remonta
+  // (isSpawning=true). Un simple true→true no desmonta el nodo y la animación
+  // no se reinicia. El requestAnimationFrame garantiza que Vue procese el
+  // unmount antes de re-montar en el siguiente tick del compositor.
+  isSpawning.value = false
+  requestAnimationFrame(() => {
+    isSpawning.value = true
+    spawnTimer = setTimeout(() => {
+      isSpawning.value = false
+    }, 1150)
+  })
+}
+
+function triggerCollapse(): Promise<void> {
+  return new Promise((resolve) => {
+    if (spawnTimer) clearTimeout(spawnTimer)
+    if (collapseTimer) clearTimeout(collapseTimer)
+    isSpawning.value = false
+    isCollapsing.value = true
+    collapseTimer = setTimeout(() => {
+      // Limpiar el estado de colapso al finalizar para que la capa FX
+      // salga del DOM y no deje nodos muertos invisibles flotando.
+      isCollapsing.value = false
+      resolve()
+    }, 280)
+  })
+}
+
+defineExpose({ seek, rendAt, triggerSpawn, triggerCollapse })
+
+interface SpawnRay {
+  id: number
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+  delay: number
+}
+
+interface SpawnSpark {
+  id: number
+  r: number
+  dx: number
+  dy: number
+  color: string
+  delay: number
+}
+
+const SPAWN_RAYS: SpawnRay[] = Array.from({ length: 12 }, (_, i) => {
+  const angle = (i * 30 * Math.PI) / 180
+  const len = 95 + (i % 3) * 25
+  return {
+    id: i,
+    x1: Math.cos(angle) * 8,
+    y1: Math.sin(angle) * 8,
+    x2: Math.cos(angle) * len,
+    y2: Math.sin(angle) * len,
+    color: i % 2 === 0 ? '#38bdf8' : '#a855f7',
+    delay: (i % 4) * 0.035
+  }
+})
+
+const SPAWN_SPARKS: SpawnSpark[] = Array.from({ length: 22 }, (_, i) => {
+  const angle = (i * (360 / 22) * Math.PI) / 180 + ((i % 2 === 0 ? 1 : -1) * 0.12)
+  const dist = 70 + (i * 19) % 75
+  const colors = ['#ffffff', '#38bdf8', '#818cf8', '#c084fc', '#f59e0b', '#34d399']
+  return {
+    id: i,
+    r: 1.5 + (i % 3) * 1.2,
+    dx: Math.cos(angle) * dist,
+    dy: Math.sin(angle) * dist,
+    color: colors[i % colors.length]!,
+    delay: (i % 6) * 0.03
+  }
+})
 </script>
 
 <template>
@@ -525,7 +623,6 @@ function dotAttrs(dot: BotFrame['dots'][number]) {
     text-rendering="geometricPrecision"
     role="img"
     :aria-label="t('app.botAria')"
-    data-tauri-drag-region
     class="block select-none cursor-grab active:cursor-grabbing gpu-composite contain-render"
     style="will-change: transform;"
   >
@@ -574,78 +671,436 @@ function dotAttrs(dot: BotFrame['dots'][number]) {
           :stop-color="c"
         />
       </linearGradient>
+
+      <!-- Gradiente radial de la singularidad / Big Bang -->
+      <radialGradient :id="`bb-singularity-${uid}`" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
+        <stop offset="25%" stop-color="#67e8f9" stop-opacity="0.95" />
+        <stop offset="60%" stop-color="#818cf8" stop-opacity="0.6" />
+        <stop offset="100%" stop-color="#a855f7" stop-opacity="0" />
+      </radialGradient>
+      <!-- Gradiente radial del colapso gravitacional hacia la singularidad -->
+      <radialGradient :id="`bb-collapse-${uid}`" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
+        <stop offset="30%" stop-color="#38bdf8" stop-opacity="0.9" />
+        <stop offset="70%" stop-color="#818cf8" stop-opacity="0.5" />
+        <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
+      </radialGradient>
     </defs>
 
-    <!-- moitie arriere des orbites : dessinee avant le corps, donc occultee -->
-    <g fill="none" stroke-linecap="round">
-      <path
-        v-for="arc in frame.arcs"
-        :key="`b${arc.id}`"
-        :d="arc.back"
-        :stroke="`url(#${uid}-${arc.id})`"
-        :stroke-width="arc.width"
-        :opacity="arc.opacity"
+    <!-- Capa de efectos del Mini Big Bang al aparecer -->
+    <g v-if="isSpawning" class="bb-fx-layer pointer-events-none">
+      <!-- Ondas de choque concéntricas -->
+      <circle cx="0" cy="0" class="bb-shockwave bb-sw-1" />
+      <circle cx="0" cy="0" class="bb-shockwave bb-sw-2" />
+      <circle cx="0" cy="0" class="bb-shockwave bb-sw-3" />
+
+      <!-- Rayos de energía estelares / Starburst -->
+      <line
+        v-for="ray in SPAWN_RAYS"
+        :key="`ray-${ray.id}`"
+        :x1="ray.x1"
+        :y1="ray.y1"
+        :x2="ray.x2"
+        :y2="ray.y2"
+        :stroke="ray.color"
+        class="bb-ray"
+        :style="{ animationDelay: `${ray.delay}s` }"
       />
+
+      <!-- Chispas cósmicas (stardust) en 360 grados -->
+      <circle
+        v-for="spark in SPAWN_SPARKS"
+        :key="`sp-${spark.id}`"
+        cx="0"
+        cy="0"
+        :r="spark.r"
+        :fill="spark.color"
+        class="bb-spark"
+        :style="{
+          '--dx': `${spark.dx}px`,
+          '--dy': `${spark.dy}px`,
+          animationDelay: `${spark.delay}s`
+        }"
+      />
+
+      <!-- Destello radiante central de la singularidad -->
+      <circle cx="0" cy="0" :fill="`url(#bb-singularity-${uid})`" class="bb-singularity" />
     </g>
 
-    <!-- particules de l'eclatement : elles passent derriere le noyau -->
-    <g v-if="frame.dotsBehind">
-      <component
-        :is="dot.d ? 'path' : 'circle'"
-        v-for="(dot, i) in frame.dots"
-        :key="`pb${i}`"
-        v-bind="dotAttrs(dot)"
-      />
+    <!-- Capa de efectos del Colapso Gravitacional / Warp a modo ventana -->
+    <g v-if="isCollapsing" class="bb-collapse-layer pointer-events-none">
+      <!-- Ondas gravitatorias de implosión / contracción hacia el centro -->
+      <circle cx="0" cy="0" class="bb-collapse-wave bb-cw-1" />
+      <circle cx="0" cy="0" class="bb-collapse-wave bb-cw-2" />
+
+      <!-- Destello final de la singularidad al comprimirse -->
+      <circle cx="0" cy="0" :fill="`url(#bb-collapse-${uid})`" class="bb-collapse-flash" />
     </g>
 
-    <g :opacity="frame.bodyAlpha">
-      <!-- Corps noir pur : antialiasing direct et lisse sans frange blanche ni serrucho -->
-      <path
-        :d="frame.bodyPath"
-        :fill="ink"
-        :mask="frame.notch ? `url(#notch-${uid})` : undefined"
-      />
-
-      <!-- Yeux en blanc pur dessines au-dessus et rognes au contour du corps -->
-      <g :clip-path="`url(#clip-${uid})`">
+    <!-- Entidad de Kyo (cuerpo, ojos, órbitas y partículas) -->
+    <g :class="{ 'bb-body-inflate': isSpawning, 'bb-body-collapse': isCollapsing }">
+      <!-- moitie arriere des orbites : dessinee avant le corps, donc occultee -->
+      <g fill="none" stroke-linecap="round">
         <path
-          v-for="(eye, i) in frame.eyes"
-          :key="i"
-          :d="eye.d"
-          :transform="eye.matrix"
-          :opacity="eye.alpha"
-          :fill="eyeFill"
+          v-for="arc in frame.arcs"
+          :key="`b${arc.id}`"
+          :d="arc.back"
+          :stroke="`url(#${uid}-${arc.id})`"
+          :stroke-width="arc.width"
+          :opacity="arc.opacity"
+        />
+      </g>
+
+      <!-- particules de l'eclatement : elles passent derriere le noyau -->
+      <g v-if="frame.dotsBehind">
+        <component
+          :is="dot.d ? 'path' : 'circle'"
+          v-for="(dot, i) in frame.dots"
+          :key="`pb${i}`"
+          v-bind="dotAttrs(dot)"
+        />
+      </g>
+
+      <g :opacity="frame.bodyAlpha">
+        <!-- Corps noir pur : antialiasing direct et lisse sans frange blanche ni serrucho -->
+        <path
+          :d="frame.bodyPath"
+          :fill="ink"
+          :mask="frame.notch ? `url(#notch-${uid})` : undefined"
+        />
+
+        <!-- Yeux en blanc pur dessines au-dessus et rognes au contour du corps -->
+        <g :clip-path="`url(#clip-${uid})`" :class="{ 'bb-eyes-awake': isSpawning, 'bb-eyes-collapse': isCollapsing }">
+          <path
+            v-for="(eye, i) in frame.eyes"
+            :key="i"
+            :d="eye.d"
+            :transform="eye.matrix"
+            :opacity="eye.alpha"
+            :fill="eyeFill"
+          />
+        </g>
+      </g>
+
+      <g v-if="!frame.dotsBehind">
+        <component
+          :is="dot.d ? 'path' : 'circle'"
+          v-for="(dot, i) in frame.dots"
+          :key="`pf${i}`"
+          v-bind="dotAttrs(dot)"
+        />
+      </g>
+
+      <circle
+        v-if="frame.notif"
+        :cx="frame.notif.x"
+        :cy="frame.notif.y"
+        :r="frame.notif.r"
+        :fill="NOTIF_BLUE"
+      />
+
+      <!-- moitie avant des orbites -->
+      <g fill="none" stroke-linecap="round">
+        <path
+          v-for="arc in frame.arcs"
+          :key="`f${arc.id}`"
+          :d="arc.front"
+          :stroke="`url(#${uid}-${arc.id})`"
+          :stroke-width="arc.width"
+          :opacity="arc.opacity"
         />
       </g>
     </g>
-
-    <g v-if="!frame.dotsBehind">
-      <component
-        :is="dot.d ? 'path' : 'circle'"
-        v-for="(dot, i) in frame.dots"
-        :key="`pf${i}`"
-        v-bind="dotAttrs(dot)"
-      />
-    </g>
-
-    <circle
-      v-if="frame.notif"
-      :cx="frame.notif.x"
-      :cy="frame.notif.y"
-      :r="frame.notif.r"
-      :fill="NOTIF_BLUE"
-    />
-
-    <!-- moitie avant des orbites -->
-    <g fill="none" stroke-linecap="round">
-      <path
-        v-for="arc in frame.arcs"
-        :key="`f${arc.id}`"
-        :d="arc.front"
-        :stroke="`url(#${uid}-${arc.id})`"
-        :stroke-width="arc.width"
-        :opacity="arc.opacity"
-      />
-    </g>
   </svg>
 </template>
+
+<style scoped>
+/* Contenedor del efecto Big Bang */
+.bb-fx-layer {
+  transform-origin: 0 0;
+}
+
+/* 1. Destello de la singularidad central */
+.bb-singularity {
+  animation: bbFlash 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes bbFlash {
+  0% {
+    r: 2px;
+    opacity: 1;
+  }
+  35% {
+    r: 95px;
+    opacity: 0.95;
+  }
+  100% {
+    r: 155px;
+    opacity: 0;
+  }
+}
+
+/* 2. Ondas gravitatorias de choque */
+.bb-shockwave {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.bb-sw-1 {
+  stroke: rgba(103, 232, 249, 0.9);
+  animation: bbWave 0.75s cubic-bezier(0.1, 0.9, 0.2, 1) forwards;
+}
+
+.bb-sw-2 {
+  stroke: rgba(168, 85, 247, 0.8);
+  animation: bbWave 0.85s 0.08s cubic-bezier(0.1, 0.9, 0.2, 1) forwards;
+}
+
+.bb-sw-3 {
+  stroke: rgba(255, 255, 255, 0.65);
+  animation: bbWave 0.95s 0.16s cubic-bezier(0.1, 0.9, 0.2, 1) forwards;
+}
+
+@keyframes bbWave {
+  0% {
+    r: 4px;
+    stroke-width: 6px;
+    opacity: 1;
+  }
+  50% {
+    stroke-width: 3px;
+    opacity: 0.85;
+  }
+  100% {
+    r: 154px;
+    stroke-width: 0.5px;
+    opacity: 0;
+  }
+}
+
+/* 3. Rayos de energía / Starburst */
+.bb-ray {
+  stroke-width: 2.2px;
+  stroke-dasharray: 100;
+  stroke-linecap: round;
+  animation: bbRayAnim 0.7s cubic-bezier(0.15, 0.85, 0.35, 1) forwards;
+}
+
+@keyframes bbRayAnim {
+  0% {
+    stroke-dashoffset: 100;
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  70% {
+    stroke-dashoffset: 15;
+    opacity: 0.8;
+  }
+  100% {
+    stroke-dashoffset: -80;
+    opacity: 0;
+  }
+}
+
+/* 4. Chispas de Stardust */
+.bb-spark {
+  animation: bbSparkAnim 0.85s cubic-bezier(0.12, 0.88, 0.32, 1) forwards;
+}
+
+@keyframes bbSparkAnim {
+  0% {
+    transform: translate(0px, 0px) scale(0);
+    opacity: 1;
+  }
+  25% {
+    opacity: 1;
+    transform: translate(calc(var(--dx) * 0.4), calc(var(--dy) * 0.4)) scale(1.4);
+  }
+  75% {
+    opacity: 0.75;
+    transform: translate(calc(var(--dx) * 0.88), calc(var(--dy) * 0.88)) scale(0.9);
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0);
+    opacity: 0;
+  }
+}
+
+/* 5. Inflación cósmica del cuerpo de Kyo */
+.bb-body-inflate {
+  transform-origin: 0 0;
+  animation: bbInflate 0.95s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+
+@keyframes bbInflate {
+  0% {
+    transform: scaleX(0) scaleY(0) rotate(-15deg);
+    opacity: 0;
+  }
+  18% {
+    transform: scaleX(0.1) scaleY(0.1) rotate(-8deg);
+    opacity: 0.85;
+  }
+  48% {
+    /* Sobre-expansión asimétrica: aplastado horizontal con rebote elástico */
+    transform: scaleX(1.15) scaleY(0.88) rotate(5deg);
+    opacity: 1;
+  }
+  68% {
+    transform: scaleX(0.96) scaleY(1.06) rotate(-2deg);
+    opacity: 1;
+  }
+  84% {
+    transform: scaleX(1.02) scaleY(0.98) rotate(1deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(1) scaleY(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+/* 6. Despertar de ojos sincronizado */
+.bb-eyes-awake {
+  transform-origin: 0 0;
+  animation: bbEyesAnim 0.95s ease-out both;
+}
+
+@keyframes bbEyesAnim {
+  0%, 42% {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  48% {
+    opacity: 1;
+    transform: scaleY(0.1);
+  }
+  65% {
+    opacity: 1;
+    transform: scaleY(1.3) scaleX(1.08);
+  }
+  80% {
+    transform: scaleY(0.88);
+  }
+  100% {
+    opacity: 1;
+    transform: scaleY(1) scaleX(1);
+  }
+}
+
+/* ────────────────────────────────────────────────── Efecto Colapso a Modo Ventana */
+.bb-collapse-layer {
+  transform-origin: 0 0;
+}
+
+/* 1. Implosión del cuerpo de Kyo hacia la singularidad */
+.bb-body-collapse {
+  transform-origin: 0 0;
+  animation: bbCollapse 0.28s cubic-bezier(0.55, 0, 0.1, 1) both;
+}
+
+@keyframes bbCollapse {
+  0% {
+    transform: scaleX(1) scaleY(1) rotate(0deg);
+    opacity: 1;
+  }
+  25% {
+    /* Anticipación: leve sobre-escala asimétrica (squash horizontal, stretch vertical) */
+    transform: scaleX(1.10) scaleY(0.92) rotate(-5deg);
+    opacity: 1;
+  }
+  60% {
+    transform: scaleX(0.68) scaleY(0.62) rotate(8deg);
+    opacity: 0.88;
+  }
+  90% {
+    transform: scaleX(0.12) scaleY(0.12) rotate(16deg);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scaleX(0) scaleY(0) rotate(20deg);
+    opacity: 0;
+  }
+}
+
+/* 2. Colapso sincronizado de los ojos */
+.bb-eyes-collapse {
+  transform-origin: 0 0;
+  animation: bbEyesCollapse 0.22s ease-in both;
+}
+
+@keyframes bbEyesCollapse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  40% {
+    transform: scaleY(0.2) scaleX(0.9);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(0);
+    opacity: 0;
+  }
+}
+
+/* 3. Onda gravitatoria de contracción/succión */
+.bb-collapse-wave {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.bb-cw-1 {
+  stroke: rgba(56, 189, 248, 0.9);
+  animation: bbImplodeWave 0.26s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.bb-cw-2 {
+  stroke: rgba(168, 85, 247, 0.75);
+  animation: bbImplodeWave 0.26s 0.04s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes bbImplodeWave {
+  0% {
+    r: 130px;
+    stroke-width: 1px;
+    opacity: 0;
+  }
+  30% {
+    stroke-width: 4px;
+    opacity: 0.95;
+  }
+  85% {
+    stroke-width: 2px;
+    opacity: 0.8;
+  }
+  100% {
+    r: 1px;
+    stroke-width: 0.5px;
+    opacity: 0;
+  }
+}
+
+/* 4. Destello concentrado de singularidad en el punto cero */
+.bb-collapse-flash {
+  animation: bbCollapseFlash 0.28s cubic-bezier(0.15, 0.85, 0.35, 1) both;
+}
+
+@keyframes bbCollapseFlash {
+  0%, 50% {
+    r: 0px;
+    opacity: 0;
+  }
+  75% {
+    r: 32px;
+    opacity: 1;
+  }
+  100% {
+    r: 1px;
+    opacity: 0;
+  }
+}
+</style>

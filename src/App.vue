@@ -8,6 +8,9 @@ import BloubBot from './components/BloubBot.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import ContextMenu from './components/ContextMenu.vue';
 import { settings, isDark } from './composables/useSettings';
+import { useKyoBridge } from './composables/useKyoBridge';
+
+const { initBridge } = useKyoBridge();
 
 const appWindow = getCurrentWindow();
 
@@ -16,6 +19,10 @@ const isContextMenuOpen = ref(false);
 const contextMenuPos = ref({ x: 40, y: 70 });
 let lastAvatarPosition: PhysicalPosition | null = null;
 let unlistenOpenSettings: (() => void) | null = null;
+let unlistenRestoreAvatar: (() => void) | null = null;
+let unlistenOpenChat: (() => void) | null = null;
+let isOpeningChat = false;
+const botRef = ref<InstanceType<typeof BloubBot> | null>(null);
 
 function onContextMenu(e: MouseEvent) {
   e.preventDefault();
@@ -48,11 +55,21 @@ async function openSettings() {
 }
 
 async function openDioxusChat() {
+  if (isOpeningChat) return;
+  isOpeningChat = true;
   closeContextMenu();
   try {
+    // Disparar animación de colapso a singularidad hacia modo ventana
+    if (botRef.value?.triggerCollapse) {
+      await botRef.value.triggerCollapse();
+    }
     await invoke('open_dioxus_chat');
   } catch (err) {
     console.error('Error opening Dioxus chat:', err);
+  } finally {
+    setTimeout(() => {
+      isOpeningChat = false;
+    }, 600);
   }
 }
 
@@ -70,26 +87,20 @@ async function closeSettings() {
 }
 
 async function startDrag(e: MouseEvent) {
-  // Clic derecho (e.button === 2) abre inmediatamente Dioxus Chat
-  if (e.button === 2) {
-    e.preventDefault();
-    openDioxusChat();
-    return;
-  }
   if (isContextMenuOpen.value) {
     closeContextMenu();
     return;
   }
-  // Si es un doble clic (detail === 2), abrir Dioxus chat y evitar capturar el arrastre
+  // Doble clic abre Dioxus Chat directamente
   if (e.detail === 2) {
     openDioxusChat();
     return;
   }
   if (e.button === 0 && !isSettingsOpen.value) {
     try {
-      await appWindow.startDragging();
+      await invoke('start_avatar_drag');
     } catch (err) {
-      console.error('Failed to drag window:', err);
+      console.error('Failed to drag avatar window:', err);
     }
   }
 }
@@ -118,19 +129,32 @@ function onWindowMouseDown(e: MouseEvent) {
 }
 
 onMounted(async () => {
+  initBridge();
   window.addEventListener('keydown', onGlobalKeydown);
   window.addEventListener('contextmenu', onGlobalContextMenu);
   window.addEventListener('mousedown', onWindowMouseDown);
+
   try {
     await appWindow.show();
     await appWindow.setFocus();
   } catch (err) {
     console.error('Error showing appWindow in onMounted:', err);
   }
+
   // Escucha el evento emitido por Rust cuando el usuario hace clic en "Opciones"
   // tanto desde el menú contextual del avatar como desde el ícono del tray.
   unlistenOpenSettings = await listen('open-settings', () => {
     openSettings();
+  });
+  // Escucha la solicitud de apertura de chat desde el tray icon
+  unlistenOpenChat = await listen('request-open-chat', () => {
+    openDioxusChat();
+  });
+  // Escucha la restauración del avatar tras cerrar Dioxus Chat o la ventana
+  unlistenRestoreAvatar = await listen('restore-avatar', () => {
+    isSettingsOpen.value = false;
+    isContextMenuOpen.value = false;
+    botRef.value?.triggerSpawn();
   });
 });
 
@@ -139,12 +163,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('contextmenu', onGlobalContextMenu);
   window.removeEventListener('mousedown', onWindowMouseDown);
   unlistenOpenSettings?.();
+  unlistenOpenChat?.();
+  unlistenRestoreAvatar?.();
 });
 </script>
 
 <template>
   <main
-    data-tauri-drag-region
     @mousedown="startDrag"
     @contextmenu.prevent="onContextMenu"
     class="w-full h-full flex items-center justify-center select-none overflow-hidden relative"
@@ -157,12 +182,10 @@ onBeforeUnmount(() => {
     <!-- Vista del Avatar -->
     <div
       v-if="!isSettingsOpen"
-      data-tauri-drag-region
-      @dblclick="openDioxusChat"
-      @contextmenu.prevent="onContextMenu"
       class="flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
     >
       <BloubBot
+        ref="botRef"
         :paper="settings.eyeColor"
         :eye-color="settings.eyeColor"
         :color="settings.color"
@@ -170,7 +193,6 @@ onBeforeUnmount(() => {
         :expression="settings.expression"
         :size="settings.avatarSize"
         :follow="settings.followCursor"
-        data-tauri-drag-region
       />
     </div>
 

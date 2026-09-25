@@ -1,11 +1,18 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use dioxus::prelude::*;
-use ui::{ChatContainer, Sidebar};
+use ui::{
+    load_font_family, load_theme_preference, save_theme_preference, spawn_sidecar_service,
+    terminate_sidecar, ActiveView, AppFont, ChatContainer, Dashboard, SettingsModal, Sidebar,
+    SidecarState, Workspace,
+};
 
 
 #[cfg(feature = "desktop")]
 use dioxus::desktop::{Config, LogicalPosition, LogicalSize, WindowBuilder};
 
-const MAIN_CSS: Asset = asset!("/assets/main.css");
+const MAIN_CSS: &str = include_str!("../assets/main.css");
+const CHAT_CSS: &str = include_str!("../../ui/assets/styling/chat.css");
 
 fn main() {
     #[cfg(feature = "desktop")]
@@ -22,16 +29,28 @@ fn main() {
         // 2. Configure borderless window with explicit position to prevent Dioxus's
         // resume_from_state from restoring off-screen (-32000, -32000) coordinates.
         let window = WindowBuilder::new()
-            .with_title("Dioxus Chat")
+            .with_title("Kyo Desktop")
             .with_decorations(false)
             .with_resizable(true)
             .with_always_on_top(false)
             .with_inner_size(LogicalSize::new(1200.0, 800.0))
             .with_position(LogicalPosition::new(100.0, 100.0));
 
+        let mut custom_head = String::with_capacity(MAIN_CSS.len() + CHAT_CSS.len() + 256);
+        custom_head.push_str("<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<style id=\"main-css\">\n");
+        custom_head.push_str(MAIN_CSS);
+        custom_head.push_str("\n</style>\n<style id=\"chat-css\">\n");
+        custom_head.push_str(CHAT_CSS);
+        custom_head.push_str("\n</style>\n");
+
+        let initial_is_dark = load_theme_preference();
+        let initial_bg = if initial_is_dark { (9, 9, 11, 255) } else { (255, 255, 255, 255) };
+
         let cfg = Config::new()
             .with_window(window)
             .with_menu(None)
+            .with_background_color(initial_bg)
+            .with_custom_head(custom_head)
             .with_on_window(|window, _dom| {
                 // Dynamically center window on screen if monitor info is available
                 if let Some(monitor) = window.current_monitor().or_else(|| window.primary_monitor()) {
@@ -145,7 +164,11 @@ fn TitleBar() -> Element {
                         class: "titlebar-btn titlebar-btn-close",
                         title: "Cerrar",
                         onclick: move |_| {
+                            terminate_sidecar();
                             dioxus::desktop::window().close();
+                            std::thread::spawn(|| {
+                                std::process::exit(0);
+                            });
                         },
                         svg {
                             class: "w-3 h-3",
@@ -171,17 +194,116 @@ fn TitleBar() -> Element {
 
 #[component]
 fn App() -> Element {
+    let active_view = use_context_provider(|| Signal::new(ActiveView::Dashboard));
+    let _workspaces = use_context_provider(|| Signal::new(Vec::<Workspace>::new()));
+    let is_settings_open = use_context_provider(|| Signal::new(false));
+    let sidecar_state = use_context_provider(|| Signal::new(SidecarState::default()));
+    let app_font = use_context_provider(|| AppFont(Signal::new(load_font_family())));
+    // Theme state: true = dark (default), false = light, persisted across sessions
+    let is_dark_theme = use_context_provider(|| Signal::new(load_theme_preference()));
+    let is_dark = *is_dark_theme.read();
+    let theme_class = if is_dark { "dark" } else { "light" };
+
+    let font = app_font.0.read().clone();
+    let sanitized_font = font.replace(|c: char| c == '\'' || c == '"' || c == ';' || c == '<' || c == '>', "").trim().to_string();
+    let target_font_css = if sanitized_font == "Kyo" || sanitized_font.is_empty() {
+        "'Kyo', ui-sans-serif, system-ui, -apple-system, sans-serif".to_string()
+    } else {
+        format!("'{sanitized_font}', 'Kyo', ui-sans-serif, system-ui, -apple-system, sans-serif")
+    };
+    let dynamic_font_css = format!(
+        ":root {{ --kyo-font-family: {target_font_css}; }} html, body, div, span, p, h1, h2, h3, h4, h5, h6, label, button, input, select, textarea, aside, header, main, section, nav, a {{ font-family: {target_font_css} !important; }} *, *::before, *::after {{ font-family: inherit; }} code, kbd, samp, pre, .font-mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important; }}"
+    );
+
+    use_effect(move || {
+        let f = app_font.0.read().clone();
+        let s = f.replace(|c: char| c == '\'' || c == '"' || c == ';' || c == '<' || c == '>', "").trim().to_string();
+        let target = if s == "Kyo" || s.is_empty() {
+            "'Kyo', ui-sans-serif, system-ui, sans-serif".to_string()
+        } else {
+            format!("'{s}', 'Kyo', ui-sans-serif, sans-serif")
+        };
+        #[cfg(feature = "desktop")]
+        {
+            let script = format!(
+                r#"
+                document.documentElement.style.setProperty('--kyo-font-family', "{target}");
+                if (document.body) document.body.style.setProperty('--kyo-font-family', "{target}");
+                let st = document.getElementById('kyo-runtime-font');
+                if (!st) {{
+                    st = document.createElement('style');
+                    st.id = 'kyo-runtime-font';
+                    document.head.appendChild(st);
+                }}
+                st.textContent = `
+                    :root {{ --kyo-font-family: {target}; }}
+                    html, body, div, span, p, h1, h2, h3, h4, h5, h6, label, button, input, select, textarea, aside, header, main, section, nav, a {{
+                        font-family: {target} !important;
+                    }}
+                    *, *::before, *::after {{
+                        font-family: inherit;
+                    }}
+                    code, kbd, samp, pre, .font-mono {{
+                        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+                    }}
+                `;
+                "#
+            );
+            spawn(async move {
+                let eval = document::eval(&script);
+                let _ = eval.await;
+            });
+        }
+    });
+
+    use_effect(move || {
+        let is_dark = *is_dark_theme.read();
+        let _ = save_theme_preference(is_dark);
+        #[cfg(feature = "desktop")]
+        {
+            let class_op = if is_dark { "remove" } else { "add" };
+            let script = format!(
+                "document.documentElement.classList.{class_op}('light'); document.body.classList.{class_op}('light');"
+            );
+            spawn(async move {
+                let eval = document::eval(&script);
+                let _ = eval.await;
+            });
+        }
+    });
+
+    // Iniciar el microservicio Go Server en segundo plano de manera no bloqueante
+    use_hook(|| {
+        spawn_sidecar_service(sidecar_state);
+    });
+
     rsx! {
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Style { {MAIN_CSS} }
+        document::Style { {CHAT_CSS} }
+        document::Style { "{dynamic_font_css}" }
         div {
-            class: "flex flex-col h-screen w-screen overflow-hidden bg-zinc-950",
+            class: "flex flex-col h-screen w-screen overflow-hidden {theme_class}",
+            style: format!("--kyo-font-family: {target_font_css} !important; font-family: {target_font_css} !important; background-color: var(--kyo-surface-0); color: var(--kyo-fg-primary);"),
             TitleBar {}
             div {
                 class: "flex flex-1 min-h-0 w-full overflow-hidden relative",
                 Sidebar {}
                 div {
                     class: "flex-1 min-w-0 h-full overflow-hidden",
-                    ChatContainer {}
+                    match *active_view.read() {
+                        ActiveView::Dashboard => rsx! { Dashboard {} },
+                        ActiveView::Chat => rsx! { ChatContainer {} },
+                    }
+                }
+            }
+        }
+
+        // Modal de Ajustes y Conexión Kyo
+        if *is_settings_open.read() {
+            div {
+                class: "{theme_class}",
+                SettingsModal {
+                    is_open: is_settings_open,
                 }
             }
         }

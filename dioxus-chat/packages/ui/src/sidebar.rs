@@ -9,8 +9,9 @@
 //! - Full offline Lucide-style SVG icons and dark-mode styling
 
 use dioxus::prelude::*;
+use crate::models::{ActiveView, Workspace, ChatSummary};
 
-const CHAT_CSS: Asset = asset!("/assets/styling/chat.css");
+const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 
 // ============================================================================
 // 1. DATA MODELS
@@ -24,25 +25,6 @@ pub struct AgentProfile {
     pub model: String,
     pub description: String,
     pub avatar_gradient: String,
-}
-
-/// A workspace grouping conversations and contexts.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Workspace {
-    pub id: String,
-    pub name: String,
-    pub icon_color: String,
-    pub is_expanded: bool,
-    pub chats: Vec<ChatSummary>,
-}
-
-/// Metadata summary of an individual conversation.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChatSummary {
-    pub id: String,
-    pub title: String,
-    pub time_label: String,
-    pub is_active: bool,
 }
 
 // ============================================================================
@@ -98,72 +80,14 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     let mut selected_agent_idx = use_signal(|| 0usize);
     let mut is_agent_menu_open = use_signal(|| false);
 
-    // Workspaces and Nested Chats
-    let mut workspaces = use_signal(|| vec![
-        Workspace {
-            id: "ws-ideas".to_string(),
-            name: "Grivyzom Ideas".to_string(),
-            icon_color: "text-indigo-400".to_string(),
-            is_expanded: true,
-            chats: vec![
-                ChatSummary {
-                    id: "chat-1".to_string(),
-                    title: "Dioxus Chat Architecture".to_string(),
-                    time_label: "Active".to_string(),
-                    is_active: true,
-                },
-                ChatSummary {
-                    id: "chat-2".to_string(),
-                    title: "Custom Window Controls & Tao".to_string(),
-                    time_label: "2h ago".to_string(),
-                    is_active: false,
-                },
-                ChatSummary {
-                    id: "chat-3".to_string(),
-                    title: "Tailwind Native Bundling".to_string(),
-                    time_label: "Yesterday".to_string(),
-                    is_active: false,
-                },
-            ],
-        },
-        Workspace {
-            id: "ws-tauri".to_string(),
-            name: "Tauri v2 Migration".to_string(),
-            icon_color: "text-emerald-400".to_string(),
-            is_expanded: false,
-            chats: vec![
-                ChatSummary {
-                    id: "chat-4".to_string(),
-                    title: "IPC Protocols & Permissions".to_string(),
-                    time_label: "3d ago".to_string(),
-                    is_active: false,
-                },
-                ChatSummary {
-                    id: "chat-5".to_string(),
-                    title: "Mobile iOS/Android Build".to_string(),
-                    time_label: "1w ago".to_string(),
-                    is_active: false,
-                },
-            ],
-        },
-        Workspace {
-            id: "ws-research".to_string(),
-            name: "LLM Agent Workflows".to_string(),
-            icon_color: "text-violet-400".to_string(),
-            is_expanded: false,
-            chats: vec![
-                ChatSummary {
-                    id: "chat-6".to_string(),
-                    title: "Tool Calling & Evaluation".to_string(),
-                    time_label: "2w ago".to_string(),
-                    is_active: false,
-                },
-            ],
-        },
-    ]);
+    // Workspaces and Views from Shared Context (no hardcoded chats or workspaces)
+    let mut workspaces = try_use_context::<Signal<Vec<Workspace>>>().unwrap_or_else(|| use_signal(Vec::new));
+    let active_view = try_use_context::<Signal<ActiveView>>();
+    let is_settings_open = try_use_context::<Signal<bool>>();
+    let sidecar_state = try_use_context::<Signal<crate::sidecar::SidecarState>>();
 
-    // Theme state (Dark/Light)
-    let mut is_dark_theme = use_signal(|| true);
+    // Theme state (Dark/Light) — shared via context from App
+    let mut is_dark_theme = use_context::<Signal<bool>>();
 
     // Calculated style values
     let current_width = if *is_collapsed.read() { 0.0 } else { *width.read() };
@@ -171,7 +95,10 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
     rsx! {
         // High-performance bundled local stylesheet
-        document::Link { rel: "stylesheet", href: CHAT_CSS }
+        document::Style {
+            href: "chat-css".to_string(),
+            {CHAT_CSS}
+        }
 
         // Global mouse capture overlay active only while dragging
         if resizing_now {
@@ -244,8 +171,18 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         class: "sidebar-header-row",
                         div {
                             class: "sidebar-header-badge",
-                            div {
-                                class: "status-dot"
+                            {
+                                let dot_style = if let Some(sc) = sidecar_state {
+                                    let (dot, _, _) = sc.read().status.color_classes();
+                                    dot
+                                } else {
+                                    "bg-emerald-400"
+                                };
+                                rsx! {
+                                    div {
+                                        class: "status-dot {dot_style}"
+                                    }
+                                }
                             }
                             span {
                                 class: "sidebar-header-title",
@@ -273,10 +210,37 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         }
                     }
 
+                    // Navigation Button: "Dashboard"
+                    button {
+                        class: "sidebar-btn-nav",
+                        onclick: move |_| {
+                            if let Some(mut av) = active_view {
+                                av.set(ActiveView::Dashboard);
+                            }
+                        },
+                        svg {
+                            class: "w-4 h-4 text-indigo-400 flex-none",
+                            view_box: "0 0 24 24",
+                            fill: "none",
+                            stroke: "currentColor",
+                            stroke_width: "2",
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            rect { x: "3", y: "3", width: "7", height: "7", rx: "1" }
+                            rect { x: "14", y: "3", width: "7", height: "7", rx: "1" }
+                            rect { x: "14", y: "14", width: "7", height: "7", rx: "1" }
+                            rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
+                        }
+                        span { "Dashboard" }
+                    }
+
                     // Primary Button: "New conversation" (Visually highlighted)
                     button {
                         class: "sidebar-btn-primary group",
                         onclick: move |_| {
+                            if let Some(mut av) = active_view {
+                                av.set(ActiveView::Chat);
+                            }
                             if let Some(ref handler) = props.on_new_chat {
                                 handler.call(());
                             }
@@ -440,99 +404,117 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     // Workspaces List (Accordion)
                     div {
                         class: "flex flex-col gap-1.5",
-                        for (ws_idx, ws) in workspaces.read().iter().enumerate() {
-                            {
-                                let is_expanded = ws.is_expanded;
-                                let query = search_query.read().to_lowercase();
-                                let filtered_chats: Vec<ChatSummary> = ws.chats.iter()
-                                    .filter(|c| query.is_empty() || c.title.to_lowercase().contains(&query))
-                                    .cloned()
-                                    .collect();
-
-                                rsx! {
-                                    div {
-                                        key: "{ws.id}",
-                                        class: "workspace-card",
-
-                                        // Level 1: Workspace Header Button
-                                        button {
-                                            class: "workspace-header-btn",
-                                            onclick: move |_| {
-                                                let mut ws_list = workspaces.write();
-                                                ws_list[ws_idx].is_expanded = !ws_list[ws_idx].is_expanded;
-                                            },
-                                            div {
-                                                class: "flex items-center gap-2 min-w-0 flex-1",
-                                                svg {
-                                                    class: "w-3.5 h-3.5 {ws.icon_color} flex-none",
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    stroke_linecap: "round",
-                                                    stroke_linejoin: "round",
-                                                    path { d: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" }
-                                                }
-                                                span {
-                                                    class: "truncate",
-                                                    "{ws.name}"
-                                                }
-                                            }
-                                            div {
-                                                class: "flex items-center gap-1.5 flex-none",
-                                                span {
-                                                    class: "workspace-badge",
-                                                    "{filtered_chats.len()}"
-                                                }
-                                                svg {
-                                                    class: if is_expanded {
-                                                        "w-3 h-3 text-zinc-400 transition-transform rotate-90"
-                                                    } else {
-                                                        "w-3 h-3 text-zinc-400 transition-transform"
-                                                    },
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    path { d: "M9 18l6-6-6-6" }
-                                                }
-                                            }
+                        if workspaces.read().is_empty() {
+                            div {
+                                class: "px-3 py-4 text-center text-xs text-zinc-500 italic space-y-2 rounded-xl bg-zinc-900/40 border border-zinc-800/40",
+                                p { "No hay espacios creados" }
+                                button {
+                                    class: "text-indigo-400 hover:text-indigo-300 text-[11px] font-medium underline cursor-pointer",
+                                    onclick: move |_| {
+                                        if let Some(mut av) = active_view {
+                                            av.set(ActiveView::Dashboard);
                                         }
+                                    },
+                                    "Crear en Dashboard"
+                                }
+                            }
+                        } else {
+                            for (ws_idx, ws) in workspaces.read().iter().enumerate() {
+                                {
+                                    let is_expanded = ws.is_expanded;
+                                    let query = search_query.read().to_lowercase();
+                                    let filtered_chats: Vec<ChatSummary> = ws.chats.iter()
+                                        .filter(|c| query.is_empty() || c.title.to_lowercase().contains(&query))
+                                        .cloned()
+                                        .collect();
 
-                                        // Level 2: Nested Chats List
-                                        if is_expanded {
-                                            div {
-                                                class: "chat-sublist",
-                                                if filtered_chats.is_empty() {
-                                                    div {
-                                                        class: "px-3 py-2 text-[11px] text-zinc-500 italic",
-                                                        "No matching chats"
+                                    rsx! {
+                                        div {
+                                            key: "{ws.id}",
+                                            class: "workspace-card",
+
+                                            // Level 1: Workspace Header Button
+                                            button {
+                                                class: "workspace-header-btn",
+                                                onclick: move |_| {
+                                                    let mut ws_list = workspaces.write();
+                                                    ws_list[ws_idx].is_expanded = !ws_list[ws_idx].is_expanded;
+                                                },
+                                                div {
+                                                    class: "flex items-center gap-2 min-w-0 flex-1",
+                                                    svg {
+                                                        class: "w-3.5 h-3.5 {ws.icon_color} flex-none",
+                                                        view_box: "0 0 24 24",
+                                                        fill: "none",
+                                                        stroke: "currentColor",
+                                                        stroke_width: "2",
+                                                        stroke_linecap: "round",
+                                                        stroke_linejoin: "round",
+                                                        path { d: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" }
                                                     }
-                                                } else {
-                                                    for chat in filtered_chats.iter() {
-                                                        {
-                                                            let is_active = chat.is_active;
-                                                            let chat_id = chat.id.clone();
-                                                            rsx! {
-                                                                button {
-                                                                    key: "{chat.id}",
-                                                                    class: if is_active {
-                                                                        "chat-item-btn active"
-                                                                    } else {
-                                                                        "chat-item-btn"
-                                                                    },
-                                                                    onclick: move |_| {
-                                                                        // Set active chat
-                                                                        let mut ws_list = workspaces.write();
-                                                                        for w in ws_list.iter_mut() {
-                                                                            for c in w.chats.iter_mut() {
-                                                                                c.is_active = c.id == chat_id;
+                                                    span {
+                                                        class: "truncate",
+                                                        "{ws.name}"
+                                                    }
+                                                }
+                                                div {
+                                                    class: "flex items-center gap-1.5 flex-none",
+                                                    span {
+                                                        class: "workspace-badge",
+                                                        "{filtered_chats.len()}"
+                                                    }
+                                                    svg {
+                                                        class: if is_expanded {
+                                                            "w-3 h-3 text-zinc-400 transition-transform rotate-90"
+                                                        } else {
+                                                            "w-3 h-3 text-zinc-400 transition-transform"
+                                                        },
+                                                        view_box: "0 0 24 24",
+                                                        fill: "none",
+                                                        stroke: "currentColor",
+                                                        stroke_width: "2",
+                                                        path { d: "M9 18l6-6-6-6" }
+                                                    }
+                                                }
+                                            }
+
+                                            // Level 2: Nested Chats List
+                                            if is_expanded {
+                                                div {
+                                                    class: "chat-sublist",
+                                                    if filtered_chats.is_empty() {
+                                                        div {
+                                                            class: "px-3 py-2 text-[11px] text-zinc-500 italic",
+                                                            "No matching chats"
+                                                        }
+                                                    } else {
+                                                        for chat in filtered_chats.iter() {
+                                                            {
+                                                                let is_active = chat.is_active;
+                                                                let chat_id = chat.id.clone();
+                                                                rsx! {
+                                                                    button {
+                                                                        key: "{chat.id}",
+                                                                        class: if is_active {
+                                                                            "chat-item-btn active"
+                                                                        } else {
+                                                                            "chat-item-btn"
+                                                                        },
+                                                                        onclick: move |_| {
+                                                                            if let Some(mut av) = active_view {
+                                                                                av.set(ActiveView::Chat);
                                                                             }
-                                                                        }
-                                                                        if let Some(ref handler) = props.on_select_chat {
-                                                                            handler.call(chat_id.clone());
-                                                                        }
-                                                                    },
+                                                                            // Set active chat
+                                                                            let mut ws_list = workspaces.write();
+                                                                            for w in ws_list.iter_mut() {
+                                                                                for c in w.chats.iter_mut() {
+                                                                                    c.is_active = c.id == chat_id;
+                                                                                }
+                                                                            }
+                                                                            if let Some(ref handler) = props.on_select_chat {
+                                                                                handler.call(chat_id.clone());
+                                                                            }
+                                                                        },
                                                                     div {
                                                                         class: "flex items-center gap-2 min-w-0 flex-1",
                                                                         svg {
@@ -565,6 +547,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         }
                     }
                 }
+                }
 
                 // ------------------------------------------------------------
                 // 3. BOTTOM DOCK: Settings, Theme, Docs, GitHub
@@ -575,7 +558,12 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     // Settings Button
                     button {
                         class: "sidebar-dock-btn",
-                        title: "Settings",
+                        title: "Ajustes de Kyo y Conexión",
+                        onclick: move |_| {
+                            if let Some(mut s) = is_settings_open {
+                                s.set(true);
+                            }
+                        },
                         svg {
                             class: "w-4 h-4",
                             view_box: "0 0 24 24",

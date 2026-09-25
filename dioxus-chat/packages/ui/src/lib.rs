@@ -15,3 +15,15 @@ pub use chat::*;
 pub mod sidebar;
 pub use sidebar::*;
 
+pub mod models;
+pub use models::*;
+
+pub mod dashboard;
+pub use dashboard::*;
+
+pub mod sidecar;
+pub use sidecar::*;
+
+pub mod settings;
+pub use settings::*;
+

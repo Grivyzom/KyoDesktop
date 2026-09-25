@@ -1,8 +1,10 @@
 import { computed, reactive, ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface AppSettings {
   // General
   theme: 'dark' | 'light' | 'system';
+  fontFamily: string;
   language: 'es' | 'en' | 'fr';
   startWithSystem: boolean;
   alwaysOnTop: boolean;
@@ -34,6 +36,7 @@ const STORAGE_KEY = 'kyo_agent_settings_v1';
 
 const defaultSettings: AppSettings = {
   theme: 'dark',
+  fontFamily: 'default',
   language: 'es',
   startWithSystem: false,
   alwaysOnTop: true,
@@ -112,6 +115,70 @@ export const isDark = computed(() =>
   settings.theme === 'system' ? prefersDark.value : settings.theme === 'dark'
 );
 
+export function applyFontFamily(font: string) {
+  if (typeof document === 'undefined') return;
+  const sanitized = (font || '').replace(/['";\\<>]/g, '').trim();
+  const fontValue = (!sanitized || sanitized === 'default' || sanitized === 'Kyo')
+    ? "'Kyo', system-ui, -apple-system, sans-serif"
+    : `'${sanitized}', 'Kyo', system-ui, -apple-system, sans-serif`;
+
+  document.documentElement.style.setProperty('--kyo-font-family', fontValue);
+  if (document.body) {
+    document.body.style.setProperty('--kyo-font-family', fontValue);
+  }
+
+  // Inyectar o actualizar etiqueta de estilo global para garantizar máxima prioridad
+  let styleTag = document.getElementById('kyo-dynamic-font-override') as HTMLStyleElement | null;
+  if (!styleTag) {
+    styleTag = document.createElement('style');
+    styleTag.id = 'kyo-dynamic-font-override';
+    document.head.appendChild(styleTag);
+  }
+  styleTag.textContent = `
+    :root, html, body, #app, .kyo-panel {
+      --kyo-font-family: ${fontValue} !important;
+      font-family: ${fontValue} !important;
+    }
+    *, *::before, *::after {
+      font-family: inherit;
+    }
+    code, kbd, samp, pre, .kyo-value {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+    }
+  `;
+}
+
+// Inicializar y observar la fuente activa
+if (typeof window !== 'undefined') {
+  applyFontFamily(settings.fontFamily);
+
+  // Sincronizar con el archivo de configuración en disco (%APPDATA%/kyo/settings.json)
+  invoke<string>('get_font_preference')
+    .then((savedDiskFont) => {
+      if (savedDiskFont && savedDiskFont !== 'Kyo' && settings.fontFamily === 'default') {
+        settings.fontFamily = savedDiskFont;
+        applyFontFamily(savedDiskFont);
+      }
+    })
+    .catch(() => {});
+
+  watch(
+    () => settings.fontFamily,
+    (newFont) => {
+      applyFontFamily(newFont);
+      // Guardar de inmediato en localStorage
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, fontFamily: newFont }));
+      } catch (e) {}
+      // Guardar en archivo persistente de disco en segundo plano
+      try {
+        invoke('save_font_preference', { font: newFont }).catch(() => {});
+      } catch (e) {}
+    }
+  );
+}
+
 export function resetSettings() {
   Object.assign(settings, defaultSettings);
+  applyFontFamily(defaultSettings.fontFamily);
 }

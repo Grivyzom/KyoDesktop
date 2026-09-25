@@ -2,6 +2,191 @@
    AI AGENT CHAT SYSTEM - PRODUCTION STYLESHEET (Tailwind + Custom Theme)
    ========================================================================== */
 
+/* ==========================================================================
+   KYO THEME TOKENS — Dark (default) / Light (:root.light)
+   All component colors reference these variables for seamless theme switching.
+   ========================================================================== */
+
+:root,
+.dark,
+:root.dark,
+html.dark,
+body.dark {
+  /* ─── Surface / Background ─── */
+  --kyo-surface-0: #09090b;
+  --kyo-surface-1: #18181b;
+  --kyo-surface-2: #27272a;
+  --kyo-surface-3: #3f3f46;
+  --kyo-surface-glass: rgba(24, 24, 27, 0.6);
+
+  /* ─── Sidebar ─── */
+  --kyo-sidebar-bg: #0b0c11;
+  --kyo-sidebar-border: #1a1d29;
+  --kyo-sidebar-top: #0d0e14;
+  --kyo-sidebar-dock: #0a0b10;
+  --kyo-sidebar-input-bg: #10121a;
+  --kyo-sidebar-input-border: #1c202e;
+  --kyo-sidebar-hover: #161825;
+  --kyo-sidebar-card-bg: #0f1118;
+  --kyo-sidebar-expand-bg: #12141d;
+  --kyo-sidebar-expand-border: #232738;
+  --kyo-sidebar-expand-hover: #1b1e2c;
+  --kyo-sidebar-agent-bg: #12131d;
+  --kyo-sidebar-agent-border: #202436;
+  --kyo-sidebar-agent-hover: #181a27;
+  --kyo-sidebar-dropdown-bg: #12141f;
+  --kyo-sidebar-dropdown-border: #252a3e;
+  --kyo-sidebar-nav-hover: #171924;
+  --kyo-sidebar-nav-active: #141620;
+  --kyo-sidebar-icon-hover: #1a1d2b;
+  --kyo-sidebar-icon-hover-border: #272c3f;
+  --kyo-sidebar-item-hover: #1a1d2c;
+  --kyo-sidebar-item-hover-border: #2b3149;
+  --kyo-sidebar-input-focus-bg: #141722;
+  --kyo-sidebar-badge-bg: #181b27;
+  --kyo-sidebar-badge-border: #222637;
+  --kyo-sidebar-ws-header-hover: #161824;
+  --kyo-sidebar-chat-hover: #161825;
+  --kyo-sidebar-chat-border-hover: #212538;
+  --kyo-sidebar-dock-hover: #181b28;
+  --kyo-sidebar-dock-hover-border: #262b3e;
+  --kyo-sidebar-dock-active: #131520;
+  --kyo-sidebar-ws-hover-border: #262b3c;
+  --kyo-sidebar-agent-hover-border: #2d334d;
+  --kyo-sidebar-nav-hover-border: #262a3d;
+
+  /* ─── Foreground / Text ─── */
+  --kyo-fg-primary: #f4f4f5;
+  --kyo-fg-secondary: #e4e4e7;
+  --kyo-fg-tertiary: #a1a1aa;
+  --kyo-fg-muted: #71717a;
+  --kyo-fg-subtle: #8b92a4;
+  --kyo-fg-dimmed: #64748b;
+  --kyo-fg-nav: #94a3b8;
+  --kyo-fg-card: #cbd5e1;
+  --kyo-fg-agent: #e2e8f0;
+  --kyo-fg-input: #f1f5f9;
+  --kyo-fg-placeholder: #4b5563;
+  --kyo-fg-expand: #9ca3af;
+
+  /* ─── Borders ─── */
+  --kyo-border-default: #27272a;
+  --kyo-border-subtle: rgba(39, 39, 42, 0.6);
+  --kyo-border-medium: rgba(39, 39, 42, 0.8);
+  --kyo-border-hover: #3f3f46;
+
+  /* ─── Accent (indigo) ─── */
+  --kyo-accent: #6366f1;
+  --kyo-accent-deep: #4f46e5;
+  --kyo-accent-soft: rgba(99, 102, 241, 0.15);
+  --kyo-accent-border: rgba(99, 102, 241, 0.4);
+  --kyo-accent-glow: rgba(99, 102, 241, 0.25);
+  --kyo-accent-selected-fg: #e0e7ff;
+
+  /* ─── Scrollbar ─── */
+  --kyo-scrollbar-thumb: #27272a;
+  --kyo-scrollbar-thumb-hover: #3f3f46;
+
+  /* ─── Shadows ─── */
+  --kyo-shadow-float: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --kyo-shadow-dropdown: 0 14px 32px rgba(0, 0, 0, 0.7);
+
+  /* ─── Chat Area ─── */
+  --kyo-chat-header-bg: rgba(255, 255, 255, 0.03);
+  --kyo-chat-header-border: rgba(255, 255, 255, 0.08);
+  --kyo-chat-nav-bg: rgba(255, 255, 255, 0.02);
+  --kyo-chat-nav-border: rgba(255, 255, 255, 0.05);
+}
+
+:root.light,
+html.light,
+body.light,
+.light {
+  /* ─── Surface / Background ─── */
+  --kyo-surface-0: #ffffff;
+  --kyo-surface-1: #f8fafc;
+  --kyo-surface-2: #f1f5f9;
+  --kyo-surface-3: #e2e8f0;
+
+  /* ─── Sidebar ─── */
+  --kyo-sidebar-bg: #f8fafc;
+  --kyo-sidebar-border: #e2e8f0;
+  --kyo-sidebar-top: #f1f5f9;
+  --kyo-sidebar-dock: #f8fafc;
+  --kyo-sidebar-input-bg: #ffffff;
+  --kyo-sidebar-input-border: #e2e8f0;
+  --kyo-sidebar-hover: #f1f5f9;
+  --kyo-sidebar-card-bg: #ffffff;
+  --kyo-sidebar-expand-bg: #ffffff;
+  --kyo-sidebar-expand-border: #e2e8f0;
+  --kyo-sidebar-expand-hover: #f1f5f9;
+  --kyo-sidebar-agent-bg: #ffffff;
+  --kyo-sidebar-agent-border: #e2e8f0;
+  --kyo-sidebar-agent-hover: #f1f5f9;
+  --kyo-sidebar-dropdown-bg: #ffffff;
+  --kyo-sidebar-dropdown-border: #e2e8f0;
+  --kyo-sidebar-nav-hover: #f1f5f9;
+  --kyo-sidebar-nav-active: #e2e8f0;
+  --kyo-sidebar-icon-hover: #f1f5f9;
+  --kyo-sidebar-icon-hover-border: #e2e8f0;
+  --kyo-sidebar-item-hover: #f1f5f9;
+  --kyo-sidebar-item-hover-border: #e2e8f0;
+  --kyo-sidebar-input-focus-bg: #ffffff;
+  --kyo-sidebar-badge-bg: #f1f5f9;
+  --kyo-sidebar-badge-border: #e2e8f0;
+  --kyo-sidebar-ws-header-hover: #f1f5f9;
+  --kyo-sidebar-chat-hover: #f1f5f9;
+  --kyo-sidebar-chat-border-hover: #e2e8f0;
+  --kyo-sidebar-dock-hover: #f1f5f9;
+  --kyo-sidebar-dock-hover-border: #e2e8f0;
+  --kyo-sidebar-dock-active: #e2e8f0;
+  --kyo-sidebar-ws-hover-border: #cbd5e1;
+  --kyo-sidebar-agent-hover-border: #cbd5e1;
+  --kyo-sidebar-nav-hover-border: #e2e8f0;
+
+  /* ─── Foreground / Text ─── */
+  --kyo-fg-primary: #0f172a;
+  --kyo-fg-secondary: #1e293b;
+  --kyo-fg-tertiary: #64748b;
+  --kyo-fg-muted: #94a3b8;
+  --kyo-fg-subtle: #64748b;
+  --kyo-fg-dimmed: #94a3b8;
+  --kyo-fg-nav: #475569;
+  --kyo-fg-card: #1e293b;
+  --kyo-fg-agent: #1e293b;
+  --kyo-fg-input: #0f172a;
+  --kyo-fg-placeholder: #94a3b8;
+  --kyo-fg-expand: #64748b;
+
+  /* ─── Borders ─── */
+  --kyo-border-default: #e2e8f0;
+  --kyo-border-subtle: rgba(226, 232, 240, 0.8);
+  --kyo-border-medium: rgba(226, 232, 240, 0.9);
+  --kyo-border-hover: #cbd5e1;
+
+  /* ─── Accent (indigo) ─── */
+  --kyo-accent: #4f46e5;
+  --kyo-accent-deep: #4338ca;
+  --kyo-accent-soft: rgba(79, 70, 229, 0.08);
+  --kyo-accent-border: rgba(79, 70, 229, 0.3);
+  --kyo-accent-glow: rgba(79, 70, 229, 0.15);
+  --kyo-accent-selected-fg: #312e81;
+
+  /* ─── Scrollbar ─── */
+  --kyo-scrollbar-thumb: #cbd5e1;
+  --kyo-scrollbar-thumb-hover: #94a3b8;
+
+  /* ─── Shadows ─── */
+  --kyo-shadow-float: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --kyo-shadow-dropdown: 0 14px 32px rgba(0, 0, 0, 0.12);
+
+  /* ─── Chat Area ─── */
+  --kyo-chat-header-bg: rgba(0, 0, 0, 0.02);
+  --kyo-chat-header-border: rgba(0, 0, 0, 0.08);
+  --kyo-chat-nav-bg: rgba(0, 0, 0, 0.02);
+  --kyo-chat-nav-border: rgba(0, 0, 0, 0.06);
+}
+
 /* Universal Reset & Box Model */
 *, *::before, *::after {
     box-sizing: border-box;
@@ -34,8 +219,8 @@ html, body {
     width: 100%;
     height: 100vh;
     overflow: hidden;
-    background-color: #09090b;
-    color: #f4f4f5;
+    background-color: var(--kyo-surface-0);
+    color: var(--kyo-fg-primary);
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -50,11 +235,11 @@ html, body {
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: #27272a;
+    background: var(--kyo-scrollbar-thumb);
     border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: #3f3f46;
+    background: var(--kyo-scrollbar-thumb-hover);
 }
 
 /* --------------------------------------------------------------------------
@@ -373,8 +558,8 @@ html, body {
    ========================================================================== */
 
 .sidebar-container {
-    background-color: #0b0c11;
-    border-right: 1px solid #1a1d29;
+    background-color: var(--kyo-sidebar-bg);
+    border-right: 1px solid var(--kyo-sidebar-border);
 }
 
 .sidebar-floating-expand-btn {
@@ -388,25 +573,25 @@ html, body {
     width: 32px;
     height: 32px;
     border-radius: 8px;
-    background-color: #12141d;
-    border: 1px solid #232738;
-    color: #9ca3af;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    background-color: var(--kyo-sidebar-expand-bg);
+    border: 1px solid var(--kyo-sidebar-expand-border);
+    color: var(--kyo-fg-expand);
+    box-shadow: var(--kyo-shadow-float);
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .sidebar-floating-expand-btn:hover {
-    background-color: #1b1e2c;
+    background-color: var(--kyo-sidebar-expand-hover);
     color: #ffffff;
-    border-color: #6366f1;
+    border-color: var(--kyo-accent);
     box-shadow: 0 0 12px rgba(99, 102, 241, 0.35);
 }
 
 .sidebar-top-section {
     padding: 12px;
-    border-bottom: 1px solid #1a1d29;
-    background-color: #0d0e14;
+    border-bottom: 1px solid var(--kyo-sidebar-border);
+    background-color: var(--kyo-sidebar-top);
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -438,7 +623,7 @@ html, body {
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #8b92a4;
+    color: var(--kyo-fg-subtle);
 }
 
 .sidebar-icon-btn {
@@ -450,15 +635,15 @@ html, body {
     border-radius: 6px;
     background: transparent;
     border: 1px solid transparent;
-    color: #8b92a4;
+    color: var(--kyo-fg-subtle);
     cursor: pointer;
     transition: all 0.12s ease;
 }
 
 .sidebar-icon-btn:hover {
-    background-color: #1a1d2b;
-    border-color: #272c3f;
-    color: #f1f5f9;
+    background-color: var(--kyo-sidebar-icon-hover);
+    border-color: var(--kyo-sidebar-icon-hover-border);
+    color: var(--kyo-fg-input);
 }
 
 .sidebar-btn-primary {
@@ -499,25 +684,25 @@ html, body {
     width: 100%;
     height: 32px;
     padding: 0 10px;
-    background-color: rgba(255, 255, 255, 0.02);
-    color: #94a3b8;
+    background-color: var(--kyo-chat-nav-bg);
+    color: var(--kyo-fg-nav);
     font-size: 12px;
     font-weight: 500;
     border-radius: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--kyo-chat-nav-border);
     cursor: pointer;
     transition: all 0.12s ease;
     user-select: none;
 }
 
 .sidebar-btn-nav:hover {
-    background-color: #171924;
+    background-color: var(--kyo-sidebar-nav-hover);
     color: #f8fafc;
-    border-color: #262a3d;
+    border-color: var(--kyo-sidebar-nav-hover-border);
 }
 
 .sidebar-btn-nav:active {
-    background-color: #141620;
+    background-color: var(--kyo-sidebar-nav-active);
 }
 
 .sidebar-agent-button {
@@ -527,19 +712,19 @@ html, body {
     width: 100%;
     height: 34px;
     padding: 0 10px;
-    background-color: #12131d;
-    color: #e2e8f0;
+    background-color: var(--kyo-sidebar-agent-bg);
+    color: var(--kyo-fg-agent);
     font-size: 12px;
     font-weight: 500;
     border-radius: 8px;
-    border: 1px solid #202436;
+    border: 1px solid var(--kyo-sidebar-agent-border);
     cursor: pointer;
     transition: all 0.12s ease;
 }
 
 .sidebar-agent-button:hover {
-    background-color: #181a27;
-    border-color: #2d334d;
+    background-color: var(--kyo-sidebar-agent-hover);
+    border-color: var(--kyo-sidebar-agent-hover-border);
     color: #ffffff;
 }
 
@@ -551,9 +736,9 @@ html, body {
     z-index: 50;
     padding: 6px;
     border-radius: 10px;
-    background-color: #12141f;
-    border: 1px solid #252a3e;
-    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.7);
+    background-color: var(--kyo-sidebar-dropdown-bg);
+    border: 1px solid var(--kyo-sidebar-dropdown-border);
+    box-shadow: var(--kyo-shadow-dropdown);
     backdrop-filter: blur(16px);
     display: flex;
     flex-direction: column;
@@ -568,7 +753,7 @@ html, body {
     border-radius: 7px;
     border: 1px solid transparent;
     background: transparent;
-    color: #94a3b8;
+    color: var(--kyo-fg-nav);
     cursor: pointer;
     text-align: left;
     transition: all 0.12s ease;
@@ -576,15 +761,15 @@ html, body {
 }
 
 .sidebar-agent-item:hover {
-    background-color: #1a1d2c;
+    background-color: var(--kyo-sidebar-item-hover);
     color: #f8fafc;
-    border-color: #2b3149;
+    border-color: var(--kyo-sidebar-item-hover-border);
 }
 
 .sidebar-agent-item.selected {
-    background-color: rgba(99, 102, 241, 0.15);
-    border-color: rgba(99, 102, 241, 0.4);
-    color: #e0e7ff;
+    background-color: var(--kyo-accent-soft);
+    border-color: var(--kyo-accent-border);
+    color: var(--kyo-accent-selected-fg);
 }
 
 .sidebar-search-box {
@@ -596,23 +781,23 @@ html, body {
     width: 100%;
     height: 32px;
     padding: 0 10px 0 32px;
-    background-color: #10121a;
-    border: 1px solid #1c202e;
+    background-color: var(--kyo-sidebar-input-bg);
+    border: 1px solid var(--kyo-sidebar-input-border);
     border-radius: 7px;
-    color: #f1f5f9;
+    color: var(--kyo-fg-input);
     font-size: 11.5px;
     outline: none;
     transition: all 0.15s ease;
 }
 
 .sidebar-search-input::placeholder {
-    color: #4b5563;
+    color: var(--kyo-fg-placeholder);
 }
 
 .sidebar-search-input:focus {
-    background-color: #141722;
-    border-color: #6366f1;
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+    background-color: var(--kyo-sidebar-input-focus-bg);
+    border-color: var(--kyo-accent);
+    box-shadow: 0 0 0 2px var(--kyo-accent-glow);
 }
 
 .sidebar-section-title {
@@ -624,20 +809,20 @@ html, body {
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #64748b;
+    color: var(--kyo-fg-dimmed);
 }
 
 .workspace-card {
     border-radius: 8px;
-    background-color: #0f1118;
-    border: 1px solid #1a1d29;
+    background-color: var(--kyo-sidebar-card-bg);
+    border: 1px solid var(--kyo-sidebar-border);
     overflow: hidden;
     margin-bottom: 6px;
     transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .workspace-card:hover {
-    border-color: #262b3c;
+    border-color: var(--kyo-sidebar-ws-hover-border);
 }
 
 .workspace-header-btn {
@@ -648,7 +833,7 @@ html, body {
     padding: 8px 10px;
     background: transparent;
     border: none;
-    color: #cbd5e1;
+    color: var(--kyo-fg-card);
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
@@ -656,7 +841,7 @@ html, body {
 }
 
 .workspace-header-btn:hover {
-    background-color: #161824;
+    background-color: var(--kyo-sidebar-ws-header-hover);
     color: #ffffff;
 }
 
@@ -665,15 +850,15 @@ html, body {
     font-size: 10px;
     padding: 1px 6px;
     border-radius: 9999px;
-    background-color: #181b27;
-    border: 1px solid #222637;
-    color: #8b92a4;
+    background-color: var(--kyo-sidebar-badge-bg);
+    border: 1px solid var(--kyo-sidebar-badge-border);
+    color: var(--kyo-fg-subtle);
 }
 
 .chat-sublist {
     display: flex;
     flex-direction: column;
-    border-top: 1px solid #181b27;
+    border-top: 1px solid var(--kyo-sidebar-badge-bg);
     padding: 4px 4px 4px 6px;
     gap: 2px;
 }
@@ -688,7 +873,7 @@ html, body {
     background: transparent;
     border: 1px solid transparent;
     border-left: 2px solid transparent;
-    color: #8b92a4;
+    color: var(--kyo-fg-subtle);
     font-size: 11.5px;
     cursor: pointer;
     transition: all 0.12s ease;
@@ -696,25 +881,25 @@ html, body {
 }
 
 .chat-item-btn:hover {
-    background-color: #161825;
-    color: #f1f5f9;
-    border-color: #212538;
+    background-color: var(--kyo-sidebar-chat-hover);
+    color: var(--kyo-fg-input);
+    border-color: var(--kyo-sidebar-chat-border-hover);
     border-left-color: transparent;
 }
 
 .chat-item-btn.active {
-    background-color: rgba(99, 102, 241, 0.15);
-    color: #f1f5f9;
-    border-color: rgba(99, 102, 241, 0.3);
-    border-left: 2px solid #6366f1;
+    background-color: var(--kyo-accent-soft);
+    color: var(--kyo-fg-input);
+    border-color: var(--kyo-accent-border);
+    border-left: 2px solid var(--kyo-accent);
     font-weight: 500;
 }
 
 .sidebar-dock {
     flex: none;
     padding: 8px 12px;
-    border-top: 1px solid #1a1d29;
-    background-color: #0a0b10;
+    border-top: 1px solid var(--kyo-sidebar-border);
+    background-color: var(--kyo-sidebar-dock);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -729,20 +914,20 @@ html, body {
     border-radius: 7px;
     background: transparent;
     border: 1px solid transparent;
-    color: #8b92a4;
+    color: var(--kyo-fg-subtle);
     cursor: pointer;
     transition: all 0.15s ease;
     text-decoration: none;
 }
 
 .sidebar-dock-btn:hover {
-    background-color: #181b28;
+    background-color: var(--kyo-sidebar-dock-hover);
     color: #f8fafc;
-    border-color: #262b3e;
+    border-color: var(--kyo-sidebar-dock-hover-border);
 }
 
 .sidebar-dock-btn:active {
-    background-color: #131520;
+    background-color: var(--kyo-sidebar-dock-active);
 }
 
 .sidebar-drag-handle {
@@ -770,9 +955,9 @@ html, body {
     padding: 5px 12px;
     font-size: 11.5px;
     font-weight: 500;
-    color: #94a3b8;
-    background-color: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--kyo-fg-nav);
+    background-color: var(--kyo-chat-header-bg);
+    border: 1px solid var(--kyo-chat-header-border);
     border-radius: 7px;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -783,3 +968,200 @@ html, body {
     color: #f87171;
     border-color: rgba(239, 68, 68, 0.3);
 }
+
+/* ==========================================================================
+   LIGHT THEME OVERRIDES (Cascading onto Tailwind Utilities & Surfaces)
+   ========================================================================== */
+
+:root.light,
+html.light,
+body.light,
+.light {
+    color-scheme: light;
+}
+
+:root.light body,
+:root.light html,
+html.light body,
+body.light,
+.light {
+    background-color: var(--kyo-surface-0);
+    color: var(--kyo-fg-primary);
+}
+
+/* Container Backgrounds */
+.light .bg-zinc-950,
+.light.bg-zinc-950,
+:root.light .bg-zinc-950,
+html.light .bg-zinc-950 { background-color: var(--kyo-surface-0) !important; }
+
+.light .bg-zinc-950\/70,
+:root.light .bg-zinc-950\/70,
+html.light .bg-zinc-950\/70 { background-color: rgba(255, 255, 255, 0.7) !important; }
+
+.light .bg-zinc-950\/60,
+:root.light .bg-zinc-950\/60,
+html.light .bg-zinc-950\/60 { background-color: rgba(248, 250, 252, 0.8) !important; }
+
+.light .bg-zinc-950\/40,
+:root.light .bg-zinc-950\/40,
+html.light .bg-zinc-950\/40 { background-color: rgba(241, 245, 249, 0.6) !important; }
+
+.light .bg-zinc-900,
+.light.bg-zinc-900,
+:root.light .bg-zinc-900,
+html.light .bg-zinc-900 { background-color: var(--kyo-surface-1) !important; }
+
+.light .bg-zinc-900\/90,
+:root.light .bg-zinc-900\/90,
+html.light .bg-zinc-900\/90 { background-color: rgba(248, 250, 252, 0.9) !important; }
+
+.light .bg-zinc-900\/80,
+:root.light .bg-zinc-900\/80,
+html.light .bg-zinc-900\/80 { background-color: rgba(248, 250, 252, 0.85) !important; }
+
+.light .bg-zinc-900\/70,
+:root.light .bg-zinc-900\/70,
+html.light .bg-zinc-900\/70 { background-color: rgba(248, 250, 252, 0.7) !important; }
+
+.light .bg-zinc-900\/60,
+:root.light .bg-zinc-900\/60,
+html.light .bg-zinc-900\/60 { background-color: rgba(248, 250, 252, 0.8) !important; }
+
+.light .bg-zinc-800,
+.light.bg-zinc-800,
+:root.light .bg-zinc-800,
+html.light .bg-zinc-800 { background-color: var(--kyo-surface-2) !important; }
+
+.light .bg-zinc-800\/80,
+:root.light .bg-zinc-800\/80,
+html.light .bg-zinc-800\/80 { background-color: rgba(241, 245, 249, 0.85) !important; }
+
+.light .bg-zinc-800\/70,
+:root.light .bg-zinc-800\/70,
+html.light .bg-zinc-800\/70 { background-color: rgba(241, 245, 249, 0.7) !important; }
+
+.light .bg-zinc-800\/60,
+:root.light .bg-zinc-800\/60,
+html.light .bg-zinc-800\/60 { background-color: rgba(241, 245, 249, 0.6) !important; }
+
+.light .bg-zinc-700,
+.light.bg-zinc-700,
+:root.light .bg-zinc-700,
+html.light .bg-zinc-700 { background-color: var(--kyo-surface-3) !important; }
+
+/* Text colors */
+.light .text-zinc-100,
+.light.text-zinc-100,
+:root.light .text-zinc-100,
+html.light .text-zinc-100 { color: var(--kyo-fg-primary) !important; }
+
+.light .text-zinc-200,
+.light.text-zinc-200,
+:root.light .text-zinc-200,
+html.light .text-zinc-200 { color: var(--kyo-fg-secondary) !important; }
+
+.light .text-zinc-300,
+.light.text-zinc-300,
+:root.light .text-zinc-300,
+html.light .text-zinc-300 { color: #334155 !important; }
+
+.light .text-zinc-400,
+.light.text-zinc-400,
+:root.light .text-zinc-400,
+html.light .text-zinc-400 { color: var(--kyo-fg-tertiary) !important; }
+
+.light .text-zinc-500,
+.light.text-zinc-500,
+:root.light .text-zinc-500,
+html.light .text-zinc-500 { color: var(--kyo-fg-muted) !important; }
+
+/* Borders */
+.light .border-zinc-800,
+.light.border-zinc-800,
+:root.light .border-zinc-800,
+html.light .border-zinc-800 { border-color: var(--kyo-border-default) !important; }
+
+.light .border-zinc-800\/80,
+:root.light .border-zinc-800\/80,
+html.light .border-zinc-800\/80 { border-color: var(--kyo-border-subtle) !important; }
+
+.light .border-zinc-800\/60,
+:root.light .border-zinc-800\/60,
+html.light .border-zinc-800\/60 { border-color: var(--kyo-border-subtle) !important; }
+
+.light .border-zinc-700,
+.light.border-zinc-700,
+:root.light .border-zinc-700,
+html.light .border-zinc-700 { border-color: var(--kyo-border-hover) !important; }
+
+.light .border-zinc-700\/70,
+:root.light .border-zinc-700\/70,
+html.light .border-zinc-700\/70 { border-color: var(--kyo-border-hover) !important; }
+
+.light .border-zinc-700\/60,
+:root.light .border-zinc-700\/60,
+html.light .border-zinc-700\/60 { border-color: var(--kyo-border-hover) !important; }
+
+.light .border-zinc-700\/50,
+:root.light .border-zinc-700\/50,
+html.light .border-zinc-700\/50 { border-color: var(--kyo-border-hover) !important; }
+
+.light .border-zinc-600,
+.light.border-zinc-600,
+:root.light .border-zinc-600,
+html.light .border-zinc-600 { border-color: #cbd5e1 !important; }
+
+/* Hover states */
+.light .hover\:bg-zinc-800:hover,
+:root.light .hover\:bg-zinc-800:hover,
+html.light .hover\:bg-zinc-800:hover { background-color: var(--kyo-surface-2) !important; }
+
+.light .hover\:bg-zinc-800\/60:hover,
+:root.light .hover\:bg-zinc-800\/60:hover,
+html.light .hover\:bg-zinc-800\/60:hover { background-color: rgba(241, 245, 249, 0.8) !important; }
+
+.light .hover\:text-zinc-200:hover,
+:root.light .hover\:text-zinc-200:hover,
+html.light .hover\:text-zinc-200:hover { color: var(--kyo-fg-primary) !important; }
+
+.light .hover\:text-zinc-300:hover,
+:root.light .hover\:text-zinc-300:hover,
+html.light .hover\:text-zinc-300:hover { color: var(--kyo-fg-secondary) !important; }
+
+/* Desktop TitleBar Light Adaptation */
+.light .titlebar-container,
+:root.light .titlebar-container,
+html.light .titlebar-container {
+    background-color: var(--kyo-surface-0) !important;
+    border-bottom: 1px solid var(--kyo-border-default) !important;
+}
+.light .titlebar-btn,
+:root.light .titlebar-btn,
+html.light .titlebar-btn {
+    color: var(--kyo-fg-tertiary) !important;
+}
+.light .titlebar-btn:hover,
+:root.light .titlebar-btn:hover,
+html.light .titlebar-btn:hover {
+    background-color: var(--kyo-surface-2) !important;
+    color: var(--kyo-fg-primary) !important;
+}
+
+/* Modals & Dialogs */
+.light .shadow-2xl,
+:root.light .shadow-2xl,
+html.light .shadow-2xl {
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15) !important;
+}
+.light .shadow-lg,
+:root.light .shadow-lg,
+html.light .shadow-lg {
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04) !important;
+}
+.light .shadow-sm,
+:root.light .shadow-sm,
+html.light .shadow-sm {
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
