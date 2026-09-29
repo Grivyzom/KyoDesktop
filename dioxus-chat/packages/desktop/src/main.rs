@@ -3,8 +3,8 @@
 use dioxus::prelude::*;
 use ui::{
     load_font_family, load_theme_preference, save_theme_preference, spawn_sidecar_service,
-    terminate_sidecar, ActiveView, AppFont, ChatContainer, Dashboard, SettingsModal, Sidebar,
-    SidecarState, Workspace,
+    terminate_sidecar, ActiveView, AppFont, AppTheme, IsSettingsOpen, ChatContainer, Dashboard,
+    SettingsModal, Sidebar, SidecarState, Workspace,
 };
 
 
@@ -196,20 +196,20 @@ fn TitleBar() -> Element {
 fn App() -> Element {
     let active_view = use_context_provider(|| Signal::new(ActiveView::Dashboard));
     let _workspaces = use_context_provider(|| Signal::new(Vec::<Workspace>::new()));
-    let is_settings_open = use_context_provider(|| Signal::new(false));
+    let is_settings_open = use_context_provider(|| IsSettingsOpen(Signal::new(false)));
     let sidecar_state = use_context_provider(|| Signal::new(SidecarState::default()));
     let app_font = use_context_provider(|| AppFont(Signal::new(load_font_family())));
     // Theme state: true = dark (default), false = light, persisted across sessions
-    let is_dark_theme = use_context_provider(|| Signal::new(load_theme_preference()));
-    let is_dark = *is_dark_theme.read();
+    let app_theme = use_context_provider(|| AppTheme(Signal::new(load_theme_preference())));
+    let is_dark = *app_theme.0.read();
     let theme_class = if is_dark { "dark" } else { "light" };
 
     let font = app_font.0.read().clone();
     let sanitized_font = font.replace(|c: char| c == '\'' || c == '"' || c == ';' || c == '<' || c == '>', "").trim().to_string();
-    let target_font_css = if sanitized_font == "Kyo" || sanitized_font.is_empty() {
-        "'Kyo', ui-sans-serif, system-ui, -apple-system, sans-serif".to_string()
+    let target_font_css = if sanitized_font.is_empty() || sanitized_font == "Segoe UI" || sanitized_font == "Default" || sanitized_font == "Kyo" || sanitized_font == "Comic Sans MS" {
+        "'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif".to_string()
     } else {
-        format!("'{sanitized_font}', 'Kyo', ui-sans-serif, system-ui, -apple-system, sans-serif")
+        format!("'{sanitized_font}', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif")
     };
     let dynamic_font_css = format!(
         ":root {{ --kyo-font-family: {target_font_css}; }} html, body, div, span, p, h1, h2, h3, h4, h5, h6, label, button, input, select, textarea, aside, header, main, section, nav, a {{ font-family: {target_font_css} !important; }} *, *::before, *::after {{ font-family: inherit; }} code, kbd, samp, pre, .font-mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important; }}"
@@ -218,10 +218,10 @@ fn App() -> Element {
     use_effect(move || {
         let f = app_font.0.read().clone();
         let s = f.replace(|c: char| c == '\'' || c == '"' || c == ';' || c == '<' || c == '>', "").trim().to_string();
-        let target = if s == "Kyo" || s.is_empty() {
-            "'Kyo', ui-sans-serif, system-ui, sans-serif".to_string()
+        let target = if s.is_empty() || s == "Segoe UI" || s == "Default" || s == "Kyo" || s == "Comic Sans MS" {
+            "'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif".to_string()
         } else {
-            format!("'{s}', 'Kyo', ui-sans-serif, sans-serif")
+            format!("'{s}', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif")
         };
         #[cfg(feature = "desktop")]
         {
@@ -257,7 +257,7 @@ fn App() -> Element {
     });
 
     use_effect(move || {
-        let is_dark = *is_dark_theme.read();
+        let is_dark = *app_theme.0.read();
         let _ = save_theme_preference(is_dark);
         #[cfg(feature = "desktop")]
         {
@@ -299,11 +299,11 @@ fn App() -> Element {
         }
 
         // Modal de Ajustes y Conexión Kyo
-        if *is_settings_open.read() {
+        if *is_settings_open.0.read() {
             div {
                 class: "{theme_class}",
                 SettingsModal {
-                    is_open: is_settings_open,
+                    is_open: is_settings_open.0,
                 }
             }
         }

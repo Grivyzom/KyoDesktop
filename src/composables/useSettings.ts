@@ -27,6 +27,15 @@ export interface AppSettings {
   orbitEffects: boolean;
   burstParticles: boolean;
 
+  // Volumen & Interacciones (Paridad Web Kyo)
+  volumetric: boolean;
+  interactivePet: boolean;
+  interactiveJelly: boolean;
+  interactiveFlinch: boolean;
+  autoSleepEnabled: boolean;
+  nightInactivitySleepMinutes: number;
+  dayInactivitySleepMinutes: number;
+
   // Avanzado
   hardwareAcceleration: boolean;
   debugMode: boolean;
@@ -55,6 +64,14 @@ const defaultSettings: AppSettings = {
   showNotificationBadge: false,
   orbitEffects: true,
   burstParticles: true,
+
+  volumetric: true,
+  interactivePet: true,
+  interactiveJelly: true,
+  interactiveFlinch: true,
+  autoSleepEnabled: true,
+  nightInactivitySleepMinutes: 6,
+  dayInactivitySleepMinutes: 20,
 
   hardwareAcceleration: true,
   debugMode: false,

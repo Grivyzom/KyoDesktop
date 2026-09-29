@@ -23,6 +23,7 @@ export interface RenderedEye {
 export interface BotFrame {
   bodyPath: string
   bodyAlpha: number
+  body: { cx: number; cy: number; sx: number; sy: number }
   eyes: RenderedEye[]
   dots: DotRender[]
   /** true = les points passent derriere le corps (particules de l'eclatement) */
@@ -82,36 +83,44 @@ const lerpLook = (a: Look, b: Look, t: number): Look => ({
   wander: lerp(a.wander, b.wander, t)
 })
 
-const lerpEye = (a: Pose['eyes'][number], b: Pose['eyes'][number], t: number) => ({
-  w: lerp(a.w, b.w, t),
-  h: lerp(a.h, b.h, t),
-  open: lerp(a.open, b.open, t),
-  tilt: lerp(a.tilt ?? 0, b.tilt ?? 0, t)
-})
+const defaultEye: Pose['eyes'][number] = { w: 0.2, h: 0.4, open: 1, tilt: 0 }
+
+const lerpEye = (a?: Pose['eyes'][number], b?: Pose['eyes'][number], t: number = 0) => {
+  const ea = a ?? defaultEye
+  const eb = b ?? defaultEye
+  return {
+    w: lerp(ea.w ?? 0.2, eb.w ?? 0.2, t),
+    h: lerp(ea.h ?? 0.4, eb.h ?? 0.4, t),
+    open: lerp(ea.open ?? 1, eb.open ?? 1, t),
+    tilt: lerp(ea.tilt ?? 0, eb.tilt ?? 0, t)
+  }
+}
 
 /** Interpolation de deux poses. Le decor se croise en opacite, pas en geometrie. */
 function blendPose(a: Pose, b: Pose, t: number): Pose {
   const out = 1 - t
+  const eyesA = a.eyes ?? [defaultEye, defaultEye]
+  const eyesB = b.eyes ?? [defaultEye, defaultEye]
   return {
     sil: blend(a.sil, b.sil, t),
-    offX: lerp(a.offX, b.offX, t),
-    offY: lerp(a.offY, b.offY, t),
+    offX: lerp(a.offX ?? 0, b.offX ?? 0, t),
+    offY: lerp(a.offY ?? 0, b.offY ?? 0, t),
     gaze: {
-      yaw: lerp(a.gaze.yaw, b.gaze.yaw, t),
-      pitch: lerp(a.gaze.pitch, b.gaze.pitch, t),
-      roll: lerp(a.gaze.roll, b.gaze.roll, t)
+      yaw: lerp(a.gaze?.yaw ?? 0, b.gaze?.yaw ?? 0, t),
+      pitch: lerp(a.gaze?.pitch ?? 0, b.gaze?.pitch ?? 0, t),
+      roll: lerp(a.gaze?.roll ?? 0, b.gaze?.roll ?? 0, t)
     },
-    split: lerp(a.split, b.split, t),
-    eyes: [lerpEye(a.eyes[0], b.eyes[0], t), lerpEye(a.eyes[1], b.eyes[1], t)],
-    eyeAlpha: lerp(a.eyeAlpha, b.eyeAlpha, t),
-    bodyAlpha: lerp(a.bodyAlpha, b.bodyAlpha, t),
+    split: lerp(a.split ?? 16, b.split ?? 16, t),
+    eyes: [lerpEye(eyesA[0], eyesB[0], t), lerpEye(eyesA[1], eyesB[1], t)],
+    eyeAlpha: lerp(a.eyeAlpha ?? 1, b.eyeAlpha ?? 1, t),
+    bodyAlpha: lerp(a.bodyAlpha ?? 1, b.bodyAlpha ?? 1, t),
     dots: [
-      ...a.dots.map((d) => ({ ...d, opacity: d.opacity * out })),
-      ...b.dots.map((d) => ({ ...d, opacity: d.opacity * t }))
+      ...(a.dots ?? []).map((d) => ({ ...d, opacity: d.opacity * out })),
+      ...(b.dots ?? []).map((d) => ({ ...d, opacity: d.opacity * t }))
     ],
     arcs: [
-      ...a.arcs.map((r) => ({ ...r, id: `a${r.id}`, opacity: r.opacity * out })),
-      ...b.arcs.map((r) => ({ ...r, id: `b${r.id}`, opacity: r.opacity * t }))
+      ...(a.arcs ?? []).map((r) => ({ ...r, id: `a${r.id}`, opacity: r.opacity * out })),
+      ...(b.arcs ?? []).map((r) => ({ ...r, id: `b${r.id}`, opacity: r.opacity * t }))
     ],
     // la pastille appartient a un seul des deux etats, elle ne se melange pas
     notif: t < 0.5 ? a.notif : b.notif,
@@ -542,6 +551,12 @@ export class BotEngine {
     return {
       bodyPath,
       bodyAlpha: pose.bodyAlpha,
+      body: {
+        cx: sil.cx * R,
+        cy: sil.cy * R,
+        sx: sil.sx,
+        sy: sil.sy
+      },
       eyes,
       dots,
       dotsBehind: pose.dotsBehind,

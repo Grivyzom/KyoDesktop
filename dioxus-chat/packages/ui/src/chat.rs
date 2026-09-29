@@ -364,21 +364,24 @@ pub fn ChatContainer() -> Element {
                     if let Some(mut av) = active_view {
                         button {
                             class: "chat-header-btn flex items-center gap-1.5",
-                            title: "Volver al Dashboard de Espacios",
+                            title: "Ir al Panel de control",
                             onclick: move |_| {
                                 av.set(crate::models::ActiveView::Dashboard);
                             },
                             svg {
-                                class: "w-3.5 h-3.5 text-zinc-400",
+                                class: "w-3.5 h-3.5 text-indigo-400",
                                 view_box: "0 0 24 24",
                                 fill: "none",
                                 stroke: "currentColor",
                                 stroke_width: "2",
                                 stroke_linecap: "round",
                                 stroke_linejoin: "round",
-                                path { d: "M19 12H5M12 19l-7-7 7-7" }
+                                rect { x: "3", y: "3", width: "7", height: "7", rx: "1" }
+                                rect { x: "14", y: "3", width: "7", height: "7", rx: "1" }
+                                rect { x: "14", y: "14", width: "7", height: "7", rx: "1" }
+                                rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
                             }
-                            span { "Dashboard" }
+                            span { "Panel de control" }
                         }
                     }
                     if *is_generating.read() {

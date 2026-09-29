@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, triggerRef, watc
 import { invoke } from '@tauri-apps/api/core'
 import { NOTIF_BLUE } from '@/bot/decor'
 import { BotEngine, type BotFrame } from '@/bot/engine'
-import { clamp, easings } from '@/bot/math'
+import { clamp } from '@/bot/math'
 import { t } from '@/i18n'
 import { lookTarget, TURN_TIME, type GazeScript } from '@/ui/gaze'
 import {
@@ -19,7 +19,7 @@ import {
 } from '@/bot/skins'
 import { blockAt, defaultCycle, offsetOf, type Block } from '@/bot/cycles'
 import { DEMI_VIEWBOX, RAYON } from '@/bot/repere'
-import { STATE_BY_ID, type StateId } from '@/bot/states'
+import { followsCursor, type StateId } from '@/bot/states'
 
 const props = withDefaults(
   defineProps<{
@@ -36,28 +36,34 @@ const props = withDefaults(
     eyeColor?: string
     /**
      * Fige le rendu a cette date (en secondes depuis le debut de l'etat).
-     * Le moteur etant une fonction pure du temps, on obtient une image
-     * reproductible au pixel pres, sans boucle d'animation : utile pour une
-     * planche d'etats, une vignette de personnalisateur ou un test.
      */
     frozenAt?: number
     /**
-     * Montage joue par le lecteur : une suite d'etats, chacun tenu la duree de
-     * son bloc. Par defaut, le cycle releve sur la video.
+     * Montage joue par le lecteur : une suite d'etats, chacun tenu la duree de son bloc.
      */
     cycle?: Block[]
     /**
-     * Le regard suit le pointeur. Hors de portee des vignettes figees, qui n'ont
-     * pas de boucle d'animation : les brancher reveillerait autant de boucles
-     * qu'il y a de cases.
+     * Le regard suit le pointeur.
      */
     follow?: boolean
     /**
-     * Regard scripte de l'arrivee : evalue a chaque image avec le temps ecoule
-     * depuis qu'il a ete pose. Independant de `follow`, qui vise le pointeur —
-     * ici c'est le script qui decide de tout, y compris de sa duree.
+     * Regard scripte de l'arrivee.
      */
     gaze?: GazeScript | null
+    /** Rendu volumétrique 3D, ombres et reflets */
+    volumetric?: boolean
+    /** Interactions tactiles de caresses et ronronnement */
+    interactivePet?: boolean
+    /** Déformation élastique masse-ressort gélatine */
+    interactiveJelly?: boolean
+    /** Réflexe de sursaut aux passages rapides du curseur */
+    interactiveFlinch?: boolean
+    /** Mise en veille automatique par inactivité */
+    autoSleepEnabled?: boolean
+    /** Minutes d'inactivité avant sommeil de nuit (22h-06h) */
+    nightInactivitySleepMinutes?: number
+    /** Minutes d'inactivité avant sommeil de jour */
+    dayInactivitySleepMinutes?: number
   }>(),
   {
     size: 320,
@@ -69,25 +75,29 @@ const props = withDefaults(
     frozenAt: undefined,
     cycle: () => defaultCycle().blocks,
     follow: false,
-    gaze: null
+    gaze: null,
+    volumetric: true,
+    interactivePet: true,
+    interactiveJelly: true,
+    interactiveFlinch: true,
+    autoSleepEnabled: true,
+    nightInactivitySleepMinutes: 6,
+    dayInactivitySleepMinutes: 20
   }
 )
 
-/**
- * Le curseur de lecture est un **index de bloc**, pas un etat : un montage peut
- * jouer deux fois le meme etat, et il faut alors savoir dans lequel des deux on
- * se trouve. `state` suit le bloc courant — c'est une sortie, l'exterieur pilote
- * la lecture par `block`.
- */
+const emit = defineEmits<{
+  (e: 'pet'): void
+  (e: 'flinch'): void
+  (e: 'wakeUp'): void
+  (e: 'sleep'): void
+}>()
+
 const block = defineModel<number>('block', { default: 0 })
 const state = defineModel<StateId>('state', { default: 'idle' })
 const playing = defineModel<boolean>('playing', { default: false })
-/** Temps ecoule dans le bloc courant, pour la tete de lecture de la timeline. */
 const elapsed = defineModel<number>('elapsed', { default: 0 })
 
-// Le repere vient de `src/bot/` : c'est lui qui definit ce que le moteur rend, le
-// composant n'en est qu'un client. Les noms courts restent, ils sont partout dans le
-// gabarit.
 const R = RAYON
 const VB = DEMI_VIEWBOX
 
@@ -98,20 +108,33 @@ const eyeFill = computed(() => props.eyeColor ?? props.paper ?? '#ffffff')
 
 const engine = new BotEngine(R, state.value, shapeRadii.value, expression.value)
 const frame = shallowRef<BotFrame>(engine.sample(props.frozenAt ?? 0))
+
 const uid = Math.random().toString(36).slice(2, 8)
 
 let raf = 0
 let nextAt = Infinity
 let last = 0
 let clock = 0
-/** Date d'horloge a laquelle le bloc courant a commence. */
 let blockStart = 0
+let lastSampleClock = -Infinity
+let lastActivityClock = 0
 
-/**
- * Pose le bloc `i` : etat, moteur, et date de fin. Appele aussi bien par la
- * boucle que par le watcher, d'ou l'absence d'effet de bord sur `block` — c'est
- * l'appelant qui decide s'il deplace le curseur.
- */
+// Références DOM pour écritures directes (zéro saccade, bypass réactivité Vue)
+const rotatorEl = ref<HTMLDivElement | null>(null)
+const groundEl = ref<HTMLDivElement | null>(null)
+const lightEl = ref<SVGRadialGradientElement | null>(null)
+const shadeEl = ref<SVGRadialGradientElement | null>(null)
+const svg = ref<SVGSVGElement | null>(null)
+
+// Cache des valeurs DOM pour éviter les écritures redondantes
+let lastRotatorTransform = ''
+let lastGroundTransform = ''
+let lastGroundOpacity = -1
+let lastLightCx = -9999
+let lastLightCy = -9999
+
+/* ------------------------------------------------------- Cycle & Montage */
+
 function apply(i: number, from = 0) {
   const b = props.cycle[i]
   if (!b) {
@@ -125,18 +148,11 @@ function apply(i: number, from = 0) {
   nextAt = playing.value ? blockStart + b.duration : Infinity
 }
 
-/** Deplace le curseur et recale le moteur dans la foulee, sans passer par le watcher. */
 function goToBlock(i: number) {
   block.value = i
   apply(i)
 }
 
-/**
- * Deplacement de la tete de lecture depuis la timeline : on tombe au milieu d'un
- * bloc, pas a son debut. L'offset transite par une variable plutot que par un
- * appel direct a `apply` : changer `block` declenchera le watcher, qui doit
- * poser la meme date que nous — sinon il remettrait le bloc a zero juste apres.
- */
 let pendingOffset = 0
 
 function seek(index: number, offset = 0) {
@@ -148,21 +164,6 @@ function seek(index: number, offset = 0) {
   block.value = index
 }
 
-/**
- * Rend le MONTAGE a la date absolue `t`, sans horloge. C'est ce qui permet de
- * capturer un cycle entier hors ecran, image par image et plus vite que le temps
- * reel.
- *
- * Pourquoi une methode a part, et pas `frozenAt` : `frozenAt` fige le temps DANS
- * l'etat courant, il ne parcourt pas les blocs. Et passer par `seek` ne suffirait
- * pas — `apply` cale le moteur sur `clock`, qui n'avance que dans la boucle et
- * reste donc a zero en mode fige. Tous les changements d'etat s'enregistreraient
- * a l'instant 0, et les fondus aux jointures de blocs seraient faux.
- *
- * D'ou le `setState` a l'offset ABSOLU du bloc : le moteur date ainsi la
- * transition la ou elle a vraiment lieu dans le cycle, et `sample(t)` retombe sur
- * la meme image que la lecture temps reel aurait produite.
- */
 let dernierBloc = -1
 
 function rendAt(t: number) {
@@ -172,14 +173,6 @@ function rendAt(t: number) {
   if (index !== dernierBloc) {
     const b = blocs[index]!
     state.value = b.state
-    /*
-     * Un RETOUR EN ARRIERE repart sans historique, la ou une avancee normale garde l'etat
-     * quitte pour le fondre. Sans cette distinction, rejouer l'image 0 apres une passe
-     * complete datait le premier etat a l'instant 0 avec le DERNIER en etat precedent, et
-     * rendait donc la pose de celui-la : l'export GIF, qui fait deux passes, s'ouvrait sur
-     * une boule sans yeux. Le lecteur est ainsi idempotent, et une passe peut etre rejouee
-     * autant de fois qu'on veut.
-     */
     if (index < dernierBloc) engine.reset(b.state, offsetOf(blocs, index))
     else engine.setState(b.state, offsetOf(blocs, index))
     dernierBloc = index
@@ -188,156 +181,380 @@ function rendAt(t: number) {
   triggerRef(frame)
 }
 
-/* ------------------------------------------------------- regard qui suit */
+function setState(s: StateId) {
+  state.value = s
+  engine.setState(s, clock)
+  if (props.frozenAt !== undefined) {
+    redrawFrozen()
+  }
+}
 
-const svg = ref<SVGSVGElement | null>(null)
+/* ------------------------------------------------------- Horloge circadienne (Nuit 22h-06h) */
 
-/** true = une cible est posee sur le moteur, donc il y a de quoi relacher. */
+function checkIsNight(): boolean {
+  const hour = new Date().getHours()
+  return hour >= 22 || hour < 6
+}
+
+const isNight = ref(checkIsNight())
+let nightTimer: ReturnType<typeof setInterval> | null = null
+
+const isNightHaloVisible = computed(() => {
+  return (
+    props.volumetric &&
+    props.size >= 56 &&
+    props.frozenAt === undefined &&
+    isNight.value &&
+    state.value !== 'sleep' &&
+    state.value !== 'deepsleep'
+  )
+})
+
+const haloStyle = computed(() => {
+  const haloSize = props.size * 1.35
+  const offset = -props.size * 0.175
+  return {
+    width: `${haloSize}px`,
+    height: `${haloSize}px`,
+    left: `${offset}px`,
+    top: `${offset}px`,
+    borderRadius: '50%',
+    background: 'radial-gradient(closest-side, rgba(129, 140, 248, 0.22), rgba(129, 140, 248, 0))'
+  }
+})
+
+const groundStyle = computed(() => {
+  const groundW = props.size * 0.56
+  const groundH = props.size * 0.09
+  const left = props.size * 0.22
+  const top = props.size * 0.81
+  return {
+    width: `${groundW}px`,
+    height: `${groundH}px`,
+    left: `${left}px`,
+    top: `${top}px`,
+    borderRadius: '50%',
+    background: 'radial-gradient(closest-side, rgba(0, 0, 0, 0.26), rgba(0, 0, 0, 0))'
+  }
+})
+
+/* ------------------------------------------------------- Physique du regard & curseur 360° */
+
 let aiming = false
-/** Date d'horloge a laquelle le demi-tour a commence. */
-let turnSince = 0
-
-/** Coordonnees relatives de la souris a travers l'ensemble des ecrans. */
 let globalDx = 0
 let globalDy = 0
 let lastCursorMove = 0
 let inFlightCursor = false
-/**
- * Cadence de l'interrogation du pointeur natif.
- *
- * Une image sur soixante, c'etait un aller-retour IPC vers Rust a CHAQUE image :
- * le pont serialise, reveille le thread principal de la fenetre et repasse par
- * l'evenement — soixante fois par seconde, pour un curseur qui ne bouge jamais
- * assez vite pour que 40 ms se voient. Le regard reste fluide, la machine
- * respire.
- */
 const CURSOR_POLL = 0.04
 let lastCursorPoll = -Infinity
+
+// Vitesse et anticipation sacadique
+let pointerSpeed = 0
+let pointerVx = 0
+let pointerVy = 0
+let lastPollDx = 0
+let lastPollDy = 0
+let lastPollTime = 0
+
+// Lissage exponentiel de la direction de regard
+let curNx = 0
+let curNy = 0
+let prevCurNy = 0
+let proximity = 0
+
+// Gelée masse-ressort (k=580, c=28)
+let jellyPos = 0
+let jellyVel = 0
+
+// Caresses et ronronnement
+let petLean = 0
+let petIntensity = 0
+let petReversals = 0
+let lastPetDir = 0
+let lastPetTime = 0
+let lastPetX = 0
+
+// Sursaut
+let lastFlinchTime = -Infinity
+let flinchTimer: ReturnType<typeof setTimeout> | null = null
+
+// Réveil
+let isWakingUp = false
+let wakeupTimer: ReturnType<typeof setTimeout> | null = null
 
 async function trackGlobalCursor() {
   if (inFlightCursor) return
   inFlightCursor = true
   try {
     const [dx, dy] = await invoke<[number, number]>('get_cursor_relative')
-    if (Math.abs(dx - globalDx) > 0.5 || Math.abs(dy - globalDy) > 0.5) {
-      lastCursorMove = clock
+    const nowTime = performance.now() / 1000
+    const dt = lastPollTime ? nowTime - lastPollTime : CURSOR_POLL
+
+    if (dt >= 0.005 && dt <= 0.35) {
+      const moved = Math.hypot(dx - lastPollDx, dy - lastPollDy)
+      const instSpeed = moved / dt
+      const instVx = (dx - lastPollDx) / dt
+      const instVy = (dy - lastPollDy) / dt
+
+      pointerSpeed = 0.35 * pointerSpeed + 0.65 * instSpeed
+      pointerVx = 0.6 * instVx + 0.4 * pointerVx
+      pointerVy = 0.6 * instVy + 0.4 * pointerVy
+
+      if (moved > 1.0) {
+        lastCursorMove = clock
+        lastActivityClock = clock
+
+        // Si l'avatar dort et qu'il y a activité significative, le réveiller
+        if ((state.value === 'sleep' || state.value === 'deepsleep') && !isWakingUp) {
+          triggerWakeup()
+        }
+
+        // Détection de sursaut (flinch) : vitesse > 1150 px/s à proximité
+        if (
+          props.interactiveFlinch &&
+          pointerSpeed > 1150 &&
+          Math.hypot(dx, dy) < Math.max(props.size * 1.35, 110) &&
+          clock - lastFlinchTime > 1.8
+        ) {
+          triggerFlinch()
+        }
+      }
     }
+
+    lastPollDx = dx
+    lastPollDy = dy
+    lastPollTime = nowTime
     globalDx = dx
     globalDy = dy
   } catch {
-    // Si execute hors de Tauri ou en attente d'initialisation
+    // Si hors environnement Tauri natif
   } finally {
     inFlightCursor = false
   }
 }
 
-function onPointerMove(event: PointerEvent) {
-  if (event.pointerType === 'touch') return
-  lastCursorMove = clock
+function triggerFlinch() {
+  lastFlinchTime = clock
+  jellyVel -= 5.4
+  const surpris = EXPRESSION_BY_ID.get('surpris') ?? null
+  if (surpris) {
+    engine.setExpression(surpris, clock)
+  }
+  emit('flinch')
+  if (flinchTimer) clearTimeout(flinchTimer)
+  flinchTimer = setTimeout(() => {
+    engine.setExpression(expression.value, clock)
+  }, 450)
 }
 
-function onPointerLeave() {
-  // Pas de reinitialisation : le tracker global prend le relais hors de la fenetre
+function triggerWakeup() {
+  if (isWakingUp) return
+  isWakingUp = true
+  state.value = 'wakeup'
+  engine.setState('wakeup', clock)
+  emit('wakeUp')
+  if (wakeupTimer) clearTimeout(wakeupTimer)
+  wakeupTimer = setTimeout(() => {
+    isWakingUp = false
+    state.value = 'idle'
+    engine.setState('idle', clock)
+  }, 1350)
+}
+
+function triggerPetReaction() {
+  emit('pet')
+  if (state.value === 'sleep' || state.value === 'deepsleep') {
+    state.value = 'deepsleep'
+    engine.setState('deepsleep', clock)
+    setTimeout(() => {
+      if (state.value === 'deepsleep') {
+        state.value = 'sleep'
+        engine.setState('sleep', clock)
+      }
+    }, 2400)
+  } else {
+    state.value = 'cuddle'
+    engine.setState('cuddle', clock)
+    setTimeout(() => {
+      if (state.value === 'cuddle') {
+        state.value = 'idle'
+        engine.setState('idle', clock)
+      }
+    }, 1400)
+  }
+}
+
+function handlePointerMoveOnAvatar(e: PointerEvent) {
+  lastCursorMove = clock
+  lastActivityClock = clock
+
+  if (props.interactivePet) {
+    const rect = svg.value?.getBoundingClientRect()
+    if (rect) {
+      const px = e.clientX - (rect.left + rect.width / 2)
+      const py = e.clientY - (rect.top + rect.height / 2)
+      const dist = Math.hypot(px, py)
+      const nowTime = performance.now() / 1000
+
+      if (py < 0 && dist < props.size * 0.48) {
+        if (nowTime - lastPetTime > 0.65) {
+          petReversals = 0
+          lastPetX = px
+        }
+        const deltaX = px - lastPetX
+        if (Math.abs(deltaX) > 5) {
+          const dir = Math.sign(deltaX)
+          petLean = clamp(petLean * 0.6 + dir * 0.4, -1, 1)
+          if (dir !== lastPetDir && lastPetDir !== 0) {
+            petReversals++
+            petIntensity = Math.min(petIntensity + 0.34, 1)
+            if (petReversals >= 3) {
+              triggerPetReaction()
+              petReversals = 0
+            }
+          }
+          lastPetDir = dir
+          lastPetX = px
+          lastPetTime = nowTime
+        }
+      }
+    }
+  }
 }
 
 function release() {
   if (!aiming) return
-  // meme duree qu'a l'aller : la tete revient pendant que la boule redescend
   engine.setLook(null, clock, TURN_TIME)
   aiming = false
 }
 
-/**
- * Vise le pointeur global a travers tous les ecrans.
- */
-function aim() {
-  // Le regard ne se pilote que sur les etats a VISAGE DE REPOS.
-  if (!STATE_BY_ID.get(state.value)?.baseFace || !svg.value) {
-    release()
+function updateGazeAndPhysics(dt: number) {
+  const canFollow = followsCursor(state.value)
+
+  if (!canFollow || !svg.value || !props.follow) {
+    if (aiming) {
+      // Revenir doucement au repos
+      const k = 8
+      const factor = 1 - Math.exp(-k * dt)
+      curNx += (0 - curNx) * factor
+      curNy += (0 - curNy) * factor
+      proximity += (0 - proximity) * factor
+      if (Math.hypot(curNx, curNy) <= 0.005) {
+        release()
+      } else {
+        engine.setLook(
+          lookTarget({
+            nx: curNx,
+            ny: curNy,
+            tour: 1,
+            pointer: false
+          }),
+          clock - 1 / 60,
+          1 / 60
+        )
+      }
+    }
     return
   }
+
   if (!aiming) {
-    turnSince = clock
     lastCursorMove = clock
   }
 
-  // Interroge le pointeur natif du systeme (moniteurs multiples), a cadence bornee
   if (clock - lastCursorPoll >= CURSOR_POLL) {
     lastCursorPoll = clock
     trackGlobalCursor()
   }
 
-  // Portee de normalisation a l'echelle du moniteur (ou des moniteurs)
-  const demiLargeur = Math.max(700, (window.screen.availWidth || 1920) / 2)
-  const demiHauteur = Math.max(450, (window.screen.availHeight || 1080) / 2)
+  const screenW = window.screen.availWidth || 1920
+  const screenH = window.screen.availHeight || 1080
+  const maxReach = Math.min(Math.max(screenW, screenH) * 0.4, 380)
 
-  const nx = clamp(globalDx / demiLargeur, -1, 1)
-  const ny = clamp(globalDy / demiHauteur, -1, 1)
+  const dist = Math.hypot(globalDx, globalDy)
+  const curve = dist > 0.001 ? Math.sin(Math.min(dist / maxReach, 1) * (Math.PI / 2)) : 0
+  let rawX = dist > 0.001 ? (globalDx / dist) * curve : 0
+  let rawY = dist > 0.001 ? (globalDy / dist) * curve : 0
 
-  // Si la souris n'a pas bouge depuis plus de 3.5 secondes, on permet a l'avatar
-  // de respirer et cligner des yeux avec une legere derive naturelle (wander)
-  const isRecentlyActive = (clock - lastCursorMove) < 3.5
+  // Anticipation sacadique
+  if (pointerSpeed > 80) {
+    const leadFactor = Math.min(pointerSpeed * 0.00007, 0.12)
+    rawX += (pointerVx / (pointerSpeed || 1)) * leadFactor
+    rawY += (pointerVy / (pointerSpeed || 1)) * leadFactor
+  }
 
+  // Désattention contemplative
+  const idleSec = clock - lastCursorMove
+  let focus = 1
+  let targetX = rawX
+  let targetY = rawY
+  let hasDeriva = false
+
+  if (idleSec > 2) {
+    focus = Math.max(0.25, 1 - (idleSec - 2) * 0.4)
+    targetX = rawX * focus
+    targetY = rawY * focus - (1 - focus) * 0.10
+    hasDeriva = focus < 0.65
+  }
+
+  // Proximité
+  const thresh = Math.max(props.size * 0.75, 45)
+  const targetProx = Math.max(0, 1 - dist / thresh) * focus
+
+  // Lissage exponentiel temporel indépendant du taux de rafraîchissement
+  const kSmooth = isNight.value ? 16 : 24
+  const factor = 1 - Math.exp(-kSmooth * dt)
+
+  prevCurNy = curNy
+  curNx += (targetX - curNx) * factor
+  curNy += (targetY - curNy) * factor
+  proximity += (targetProx - proximity) * factor
+
+  // Physique masse-ressort gélatine (D4 §3)
+  if (props.interactiveJelly) {
+    const deltaNy = curNy - prevCurNy
+    const targetJ = clamp(-deltaNy * 0.42, -0.15, 0.15)
+    const f = (targetJ - jellyPos) * 580 - jellyVel * 28
+    jellyVel += f * dt
+    jellyPos += jellyVel * dt
+    jellyPos = clamp(jellyPos, -0.35, 0.35)
+  }
+
+  // Décroissance des caresses et du ronronnement (D4 §2)
+  if (props.interactivePet) {
+    petIntensity = Math.max(0, petIntensity - 2.2 * dt)
+    petLean *= Math.max(0, 1 - 3 * dt)
+  }
+
+  // Transmission au moteur
   engine.setLook(
     lookTarget({
-      nx,
-      ny,
-      tour: easings.easeOutQuint(clamp((clock - turnSince) / TURN_TIME)),
-      pointer: isRecentlyActive
+      nx: curNx,
+      ny: curNy,
+      tour: state.value === 'dance' ? 0.8 : 1,
+      pointer: !hasDeriva
     }),
-    clock
+    clock - 1 / 60,
+    1 / 60
   )
   aiming = true
 }
 
-/* ------------------------------------------------- regard d'arrivee */
+/* ------------------------------------------------- Regard scripté d'arrivée */
 
-/** Date d'horloge a laquelle le script de regard a ete pose. */
 let gazeSince = 0
-/** true = un script tourne, donc il y a de quoi relacher. */
 let scripted = false
-
-/**
- * Rattrapage court, la ou le suivi du pointeur prend celui du moteur : le script
- * EST l'animation, et laisser le moteur en lisser une seconde par-dessus
- * retarderait son depart d'un quart de seconde — un script qui commence par
- * regarder au loin verrait ses yeux partir de la pose, y revenir, puis repartir.
- *
- * Non nul quand meme : a zero, `lookAtTime` divise zero par zero a l'image ou la
- * cible est posee, et un `NaN` s'installe dans le moteur pour de bon.
- */
 const SCRIPT_MORPH = 1 / 60
 
-/**
- * Le script decide de tout, y compris de sa duree : on ne fait que lui donner le
- * temps ecoule. La regle elle-meme est dans `@/ui/gaze`, comme celle du suivi.
- */
 function scriptedGaze(run: GazeScript) {
   engine.setLook(run(clock - gazeSince), clock, SCRIPT_MORPH)
 }
 
-/**
- * Depart et relachement du script. `immediate` parce que la page s'ouvre DEJA en
- * arrivee — c'est meme son seul usage — et le relachement parce qu'un script
- * coupe avant sa fin (bloc raccourci, changement de vue) laisserait sinon les
- * yeux figes la ou il s'est arrete : le moteur GARDE la derniere cible.
- */
 watch(
   () => props.gaze,
   (run) => {
     if (run) {
       gazeSince = clock
       scripted = true
-      /*
-       * Valeur de depart posee DATEE D'UN RATTRAPAGE PLUS TOT, pour qu'elle soit
-       * deja pleinement appliquee a la premiere image.
-       *
-       * Sans ca, le moteur rend la premiere image avec le regard neutre et la
-       * seconde avec celui du script : les yeux sautent d'un coup entre les deux.
-       * Discret pour un script qui commence au repos, spectaculaire pour un qui
-       * commence en regardant au loin — 127 px d'un coup sur une boule de 100 de
-       * rayon, ce qui est exactement le defaut que ces scripts corrigent.
-       */
       engine.setLook(run(0), clock - SCRIPT_MORPH, SCRIPT_MORPH)
       return
     }
@@ -348,17 +565,15 @@ watch(
   { immediate: true }
 )
 
+/* ------------------------------------------------- Boucle de rendu (rAF Throttled) */
+
 function tick(ms: number) {
   raf = requestAnimationFrame(tick)
-  // Horloge de scene a delta borne : un onglet masque puis reaffiche reprend
-  // sans sauter en avant (rAF est suspendu pendant ce temps-la).
+
   const dt = last ? Math.min((ms - last) / 1000, 0.064) : 0
   last = ms
   clock += dt
 
-  // Le stop ne gele pas l'horloge : arrete, le bot continue de respirer et de
-  // cligner. Seuls l'enchainement du montage et la tete de lecture sont
-  // suspendus.
   if (playing.value) {
     if (clock >= nextAt && props.cycle.length) {
       goToBlock((block.value + 1) % props.cycle.length)
@@ -367,59 +582,114 @@ function tick(ms: number) {
     }
   }
 
-  // Le suivi prime : les deux ecrivent la meme cible, et l'arrivee est terminee
-  // bien avant qu'une vue a suivi ne s'ouvre.
-  if (props.follow) aim()
-  else if (props.gaze) scriptedGaze(props.gaze)
+  if (props.follow) {
+    updateGazeAndPhysics(dt)
+  } else if (props.gaze) {
+    scriptedGaze(props.gaze)
+  }
 
-  frame.value = engine.sample(clock)
-  triggerRef(frame)
+  // Cadencement adaptatif (D2 §10)
+  const isReducedMotion =
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+    document.documentElement.classList.contains('reduce-motion')
+
+  const targetFps = isReducedMotion ? 12 : (clock - lastCursorMove < 1.0 ? 60 : 30)
+  const sampleInterval = 1 / targetFps
+
+  if (clock - lastSampleClock >= sampleInterval) {
+    lastSampleClock = clock
+    frame.value = engine.sample(clock)
+    triggerRef(frame)
+  }
+
+  // Écritures directes sur le DOM
+  writeDirectDomUpdates()
 }
 
-/** Redessine sans la boucle : sert aux vignettes figees quand la forme change. */
+function writeDirectDomUpdates() {
+  const body = frame.value.body || { cx: 0, cy: 0, sx: 1, sy: 1 }
+
+  // 1. Dégradés volumétriques de lumière et d'ombre (D2 §4)
+  if (props.volumetric && lightEl.value && shadeEl.value) {
+    const lx = Number((body.cx + (-0.34 - curNx * 0.26) * R).toFixed(1))
+    const ly = Number((body.cy + (-0.42 - curNy * 0.26) * R).toFixed(1))
+    if (lx !== lastLightCx || ly !== lastLightCy) {
+      lastLightCx = lx
+      lastLightCy = ly
+      const sLx = String(lx)
+      const sLy = String(ly)
+      lightEl.value.setAttribute('cx', sLx)
+      lightEl.value.setAttribute('cy', sLy)
+      shadeEl.value.setAttribute('cx', sLx)
+      shadeEl.value.setAttribute('cy', sLy)
+    }
+  }
+
+  // 2. Sombra de contacto au sol (D2 §5)
+  if (props.volumetric && props.size >= 56 && groundEl.value) {
+    const lift = clamp(-body.cy / R, 0, 0.4)
+    const squash = clamp(body.sx / body.sy, 0.8, 1.25)
+    const k = clamp((1 - 1.7 * lift) * squash, 0.45, 1.25)
+    const op = Number(clamp(1 - 2.2 * lift, 0.25, 1).toFixed(3))
+    const shiftX = Number((curNx * props.size * 0.03 + (body.cx / 316) * props.size).toFixed(1))
+    const scaleY = Number((0.6 + 0.4 * k).toFixed(3))
+    const kRounded = Number(k.toFixed(3))
+    const groundTransform = `translateX(${shiftX}px) scale(${kRounded}, ${scaleY})`
+
+    if (groundTransform !== lastGroundTransform) {
+      lastGroundTransform = groundTransform
+      groundEl.value.style.transform = groundTransform
+    }
+    if (op !== lastGroundOpacity) {
+      lastGroundOpacity = op
+      groundEl.value.style.opacity = String(op)
+    }
+  }
+
+  // 3. Rotateur 3D et micro-parallaxe (D2 §6)
+  if (rotatorEl.value) {
+    const rotY = (curNx * 15).toFixed(2)
+    const rotX = (-curNy * 11).toFixed(2)
+    const petLeanDeg = petLean * petIntensity * 5.5
+    const rotZ = (-curNx * curNy * 2.5 + petLeanDeg).toFixed(2)
+    const tx = (curNx * props.size * 0.015).toFixed(2)
+    const ty = (curNy * props.size * 0.015).toFixed(2)
+    const tz = (proximity * 10).toFixed(2)
+    const purr = props.interactivePet ? Math.sin(clock * 48) * petIntensity * 0.026 : 0
+    const j = (props.interactiveJelly ? jellyPos : 0) + purr
+    const sx = ((1 - 0.85 * j) * (1 + 0.04 * proximity)).toFixed(4)
+    const sy = ((1 + j) * (1 + 0.04 * proximity)).toFixed(4)
+    const rotatorTransform = `perspective(800px) rotateY(${rotY}deg) rotateX(${rotX}deg) rotateZ(${rotZ}deg) translate3d(${tx}px, ${ty}px, ${tz}px) scale(${sx}, ${sy})`
+
+    if (rotatorTransform !== lastRotatorTransform) {
+      lastRotatorTransform = rotatorTransform
+      rotatorEl.value.style.transform = rotatorTransform
+    }
+  }
+}
+
 function redrawFrozen() {
   if (props.frozenAt === undefined) return
   frame.value = engine.sample(props.frozenAt)
   triggerRef(frame)
 }
 
-// Curseur deplace de l'exterieur : clic sur un bloc de la timeline. Quand c'est
-// `goToBlock` qui l'a bouge, `apply` est deja passe et repasse ici sans effet
-// (setState sort si l'etat n'a pas change, la date de fin est la meme).
 watch(block, (i) => {
   apply(i, pendingOffset)
   pendingOffset = 0
 })
 
-// Changement d'etat venu d'une prop : c'est le cas des vignettes figees, qui
-// n'ont pas de curseur. En lecture, `apply` a deja fait le travail.
-//
-// Le garde n'est pas une optimisation, il corrompait une image a CHAQUE jointure
-// de bloc a l'export : `rendAt` pose l'etat sur le moteur a son offset ABSOLU
-// puis echantillonne a la bonne date, mais le watcher — dont la file est videe
-// par le `nextTick` de l'export — repassait ensuite un `redrawFrozen()` non
-// inerte (le lecteur hors ecran est monte avec `frozenAt: 0`). Or `sample(0)`
-// juste apres un changement date a l'offset donne un ratio de melange nul, donc
-// la pose de l'etat PRECEDENT : le point d'exclamation revenait au depart de sa
-// course pendant une image, treize fois dans le montage par defaut.
 watch(state, (id) => {
-  // `rendAt` ou `apply` l'a deja applique, et a la bonne date
   if (engine.state === id) return
   engine.setState(id, clock)
   redrawFrozen()
 })
 
-// Reprise la ou la tete de lecture s'est arretee, pas au debut du bloc.
 watch(playing, (on) => {
   if (on) apply(block.value, elapsed.value)
   else nextAt = Infinity
 })
 
-// Le montage a change sous nos pieds : bloc supprime, duree tiree, autre cycle
-// choisi. On garde le curseur dans les bornes et on recale la date de fin sur
-// la nouvelle duree — si le bloc a ete raccourci sous la position courante, la
-// boucle passe au suivant des la frame suivante, ce qui est le comportement
-// voulu.
 watch(
   () => props.cycle,
   (blocks) => {
@@ -437,8 +707,6 @@ watch(
 )
 
 watch(shapeRadii, (radii) => {
-  // on passe l'horloge : le moteur morphe vers la nouvelle forme au lieu de
-  // l'appliquer d'un coup
   engine.setShape(radii, clock)
   redrawFrozen()
 })
@@ -448,83 +716,33 @@ watch(expression, (expr) => {
   redrawFrozen()
 })
 
-/**
- * Deplacer `frozenAt` redessine. La prop ne servait qu'a poser une vignette une
- * fois pour toutes, donc personne ne la bougeait ; l'export anime, lui, avance
- * image par image sur une instance hors ecran. Sans ce watcher elle reste sur sa
- * premiere image et l'animation exportee ne bouge pas.
- */
 watch(() => props.frozenAt, redrawFrozen)
 
-/**
- * L'ecoute du pointeur ne vit que le temps du suivi. `immediate` parce que la
- * vue peut s'ouvrir deja en mode suivi ; le garde sur `frozenAt` parce qu'une
- * vignette figee n'a pas de boucle pour consommer la cible, donc rien a ecouter.
- */
-watch(
-  () => props.follow && props.frozenAt === undefined,
-  (on) => {
-    if (on) {
-      window.addEventListener('pointermove', onPointerMove)
-      document.addEventListener('pointerleave', onPointerLeave)
-      return
+/* ---------------------------------------------------- Veille automatique (D5 §5) */
+
+let autoSleepInterval: ReturnType<typeof setInterval> | null = null
+
+function checkAutoSleep() {
+  if (!props.autoSleepEnabled || props.frozenAt !== undefined) return
+  if (state.value === 'sleep' || state.value === 'deepsleep' || isWakingUp) return
+
+  const inactiveSeconds = clock - lastActivityClock
+  const maxMinutes = isNight.value
+    ? props.nightInactivitySleepMinutes
+    : props.dayInactivitySleepMinutes
+
+  if (maxMinutes <= 0) return
+
+  if (inactiveSeconds >= maxMinutes * 60) {
+    if (state.value === 'idle') {
+      setState('sleep')
+      emit('sleep')
     }
-    detach()
-    release()
-  },
-  { immediate: true }
-)
-
-function detach() {
-  window.removeEventListener('pointermove', onPointerMove)
-  document.removeEventListener('pointerleave', onPointerLeave)
+  }
 }
 
-onMounted(() => {
-  if (props.frozenAt !== undefined) return
-  // le curseur peut arriver deja pose (URL, cycle relu du stockage)
-  apply(block.value, elapsed.value)
-  raf = requestAnimationFrame(tick)
-  // Activar la animación Big Bang de aparición inicial en el primer frame compuesto
-  // (isSpawning arranca en false para no romper vignettes frozen; aquí lo encendemos)
-  isSpawning.value = true
-  spawnTimer = setTimeout(() => {
-    isSpawning.value = false
-  }, 1150)
-})
-onBeforeUnmount(() => {
-  cancelAnimationFrame(raf)
-  if (spawnTimer) clearTimeout(spawnTimer)
-  if (collapseTimer) clearTimeout(collapseTimer)
-  detach()
-})
+/* ---------------------------------------------------- Big Bang & Colapso */
 
-/**
- * Un point est un simple disque, sauf quand l'etat fournit une forme (la
- * goutte du "!" penche) : le path est alors en unites de rayon de boule et
- * centre sur l'origine, donc on le pose avec translate/rotate/scale.
- *
- * La couleur suit celle du corps par defaut ; `depth` sert aux particules, qui
- * se fondent dans le fond a mesure qu'elles s'eloignent.
- */
-function dotAttrs(dot: BotFrame['dots'][number]) {
-  const fill =
-    dot.color ?? (dot.depth === undefined ? ink.value : mixHex(props.paper, ink.value, dot.depth))
-  const common = { fill, opacity: dot.opacity }
-  return dot.d
-    ? {
-        ...common,
-        d: dot.d,
-        transform: `translate(${dot.x} ${dot.y}) rotate(${dot.rot ?? 0}) scale(${R})`
-      }
-    : { ...common, cx: dot.x, cy: dot.y, r: dot.r }
-}
-
-/* ---------------------------------------------------- animación Big Bang & Colapso */
-
-// Comienza en false: el onMounted activa la animación sólo si el componente no es
-// una vignette fija (frozenAt === undefined). Las vignettes congeladas nunca deben
-// entrar en el flujo de animación de spawn y quedar atascadas en scale(0).
 const isSpawning = ref(false)
 const isCollapsing = ref(false)
 let spawnTimer: ReturnType<typeof setTimeout> | null = null
@@ -534,11 +752,6 @@ function triggerSpawn() {
   if (spawnTimer) clearTimeout(spawnTimer)
   if (collapseTimer) clearTimeout(collapseTimer)
   isCollapsing.value = false
-  // Forzar ciclo false→true aunque ya sea false: Vue sólo puede reiniciar la
-  // animación CSS si el elemento se desmonta (isSpawning=false) y se remonta
-  // (isSpawning=true). Un simple true→true no desmonta el nodo y la animación
-  // no se reinicia. El requestAnimationFrame garantiza que Vue procese el
-  // unmount antes de re-montar en el siguiente tick del compositor.
   isSpawning.value = false
   requestAnimationFrame(() => {
     isSpawning.value = true
@@ -555,15 +768,21 @@ function triggerCollapse(): Promise<void> {
     isSpawning.value = false
     isCollapsing.value = true
     collapseTimer = setTimeout(() => {
-      // Limpiar el estado de colapso al finalizar para que la capa FX
-      // salga del DOM y no deje nodos muertos invisibles flotando.
       isCollapsing.value = false
       resolve()
     }, 280)
   })
 }
 
-defineExpose({ seek, rendAt, triggerSpawn, triggerCollapse })
+defineExpose({ seek, rendAt, triggerSpawn, triggerCollapse, setState, triggerPetReaction })
+
+const isSleeping = computed(() => {
+  return (
+    (state.value === 'sleep' || state.value === 'deepsleep') &&
+    !isSpawning.value &&
+    !isCollapsing.value
+  )
+})
 
 interface SpawnRay {
   id: number
@@ -611,211 +830,421 @@ const SPAWN_SPARKS: SpawnSpark[] = Array.from({ length: 22 }, (_, i) => {
     delay: (i % 6) * 0.03
   }
 })
+
+function dotAttrs(dot: BotFrame['dots'][number]) {
+  const fill =
+    dot.color ?? (dot.depth === undefined ? ink.value : mixHex(props.paper, ink.value, dot.depth))
+  const common = { fill, opacity: dot.opacity }
+  return dot.d
+    ? {
+        ...common,
+        d: dot.d,
+        transform: `translate(${dot.x} ${dot.y}) rotate(${dot.rot ?? 0}) scale(${R})`
+      }
+    : { ...common, cx: dot.x, cy: dot.y, r: dot.r }
+}
+
+/* ---------------------------------------------------- Portier de visibilité */
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    cancelAnimationFrame(raf)
+    raf = 0
+  } else {
+    if (!raf && props.frozenAt === undefined) {
+      last = 0
+      raf = requestAnimationFrame(tick)
+    }
+  }
+}
+
+onMounted(() => {
+  if (props.frozenAt !== undefined) return
+
+  apply(block.value, elapsed.value)
+  raf = requestAnimationFrame(tick)
+
+  isSpawning.value = true
+  spawnTimer = setTimeout(() => {
+    isSpawning.value = false
+  }, 1150)
+
+  // Timer de nuit toutes les 30 secondes
+  nightTimer = setInterval(() => {
+    isNight.value = checkIsNight()
+  }, 30000)
+
+  // Évaluation de l'auto-veille toutes les 20 secondes
+  autoSleepInterval = setInterval(checkAutoSleep, 20000)
+
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onBeforeUnmount(() => {
+  if (raf) cancelAnimationFrame(raf)
+  if (spawnTimer) clearTimeout(spawnTimer)
+  if (collapseTimer) clearTimeout(collapseTimer)
+  if (flinchTimer) clearTimeout(flinchTimer)
+  if (wakeupTimer) clearTimeout(wakeupTimer)
+  if (nightTimer) clearInterval(nightTimer)
+  if (autoSleepInterval) clearInterval(autoSleepInterval)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 </script>
 
 <template>
-  <svg
-    ref="svg"
-    :width="props.size"
-    :height="props.size"
-    :viewBox="`${-VB} ${-VB} ${VB * 2} ${VB * 2}`"
-    shape-rendering="geometricPrecision"
-    text-rendering="geometricPrecision"
-    role="img"
-    :aria-label="t('app.botAria')"
-    class="block select-none cursor-grab active:cursor-grabbing gpu-composite contain-render"
-    style="will-change: transform;"
+  <div
+    class="bloub-root relative select-none flex items-center justify-center contain-layout"
+    :style="{
+      width: `${props.size}px`,
+      height: `${props.size}px`,
+      perspective: '800px'
+    }"
+    @pointermove="handlePointerMoveOnAvatar"
   >
-    <defs>
-      <!--
-        Les yeux sont de vrais trous perces dans le corps (comme sur x.ai), pas
-        des formes blanches posees dessus : ils restent donc automatiquement
-        rognes par la silhouette quand ils glissent vers le bord.
-      -->
-      <clipPath :id="`clip-${uid}`">
-        <path :d="frame.bodyPath" />
-      </clipPath>
+    <!-- 1. Halo nocturne statique (D2 §9) : 22h-06h, sans filtre coûteux -->
+    <div
+      v-if="isNightHaloVisible"
+      class="bloub-halo pointer-events-none absolute"
+      :style="haloStyle"
+    />
 
-      <mask
-        v-if="frame.notch"
-        :id="`notch-${uid}`"
-        maskUnits="userSpaceOnUse"
-        :x="-VB"
-        :y="-VB"
-        :width="VB * 2"
-        :height="VB * 2"
+    <!-- 2. Sombra de contacto au sol (D2 §5) -->
+    <div
+      v-if="props.size >= 56 && props.volumetric"
+      ref="groundEl"
+      class="bloub-ground pointer-events-none absolute"
+      :style="groundStyle"
+    />
+
+    <!-- 3. Rotateur 3D avec micro-parallaxe (D2 §6) -->
+    <div
+      ref="rotatorEl"
+      class="bloub-rotator w-full h-full flex items-center justify-center"
+      style="transform-style: preserve-3d; will-change: transform;"
+    >
+      <svg
+        ref="svg"
+        :width="props.size"
+        :height="props.size"
+        :viewBox="`${-VB} ${-VB} ${VB * 2} ${VB * 2}`"
+        shape-rendering="geometricPrecision"
+        text-rendering="geometricPrecision"
+        role="img"
+        :aria-label="t('app.botAria')"
+        class="block select-none gpu-composite contain-render"
       >
-        <rect :x="-VB" :y="-VB" :width="VB * 2" :height="VB * 2" fill="#fff" />
-        <circle
-          :cx="frame.notch.x"
-          :cy="frame.notch.y"
-          :r="frame.notch.r"
-          fill="#000"
-        />
-      </mask>
+        <defs>
+          <!-- Masque d'encre unifié (D2 §3) : corps blanc, yeux noirs, encoche noire -->
+          <mask
+            :id="`mask-${uid}`"
+            maskUnits="userSpaceOnUse"
+            :x="-VB"
+            :y="-VB"
+            :width="VB * 2"
+            :height="VB * 2"
+          >
+            <rect :x="-VB" :y="-VB" :width="VB * 2" :height="VB * 2" fill="#000" />
+            <path :d="frame.bodyPath" fill="#fff" />
+            <g :class="{ 'bb-eyes-awake': isSpawning, 'bb-eyes-collapse': isCollapsing }">
+              <path
+                v-for="(eye, i) in frame.eyes"
+                :key="i"
+                :d="eye.d"
+                :transform="eye.matrix"
+                :opacity="eye.alpha"
+                fill="#000"
+                stroke="#000"
+                stroke-width="0.4"
+              />
+            </g>
+            <circle
+              v-if="frame.notch"
+              :cx="frame.notch.x"
+              :cy="frame.notch.y"
+              :r="frame.notch.r"
+              fill="#000"
+            />
+          </mask>
 
-      <linearGradient
-        v-for="arc in frame.arcs"
-        :id="`${uid}-${arc.id}`"
-        :key="arc.id"
-        gradientUnits="userSpaceOnUse"
-        :x1="arc.grad.x1"
-        :y1="arc.grad.y1"
-        :x2="arc.grad.x2"
-        :y2="arc.grad.y2"
-      >
-        <stop
-          v-for="(c, i) in arc.grad.stops"
-          :key="i"
-          :offset="i / (arc.grad.stops.length - 1)"
-          :stop-color="c"
-        />
-      </linearGradient>
+          <!-- Dégradé volumétrique spéculaire -light (D2 §4) -->
+          <radialGradient
+            :id="`light-${uid}`"
+            ref="lightEl"
+            gradientUnits="userSpaceOnUse"
+            :cx="-0.34 * R"
+            :cy="-0.42 * R"
+            :r="0.95 * R"
+          >
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="0.34" />
+            <stop offset="28%" stop-color="#ffffff" stop-opacity="0.12" />
+            <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+          </radialGradient>
 
-      <!-- Gradiente radial de la singularidad / Big Bang -->
-      <radialGradient :id="`bb-singularity-${uid}`" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
-        <stop offset="25%" stop-color="#67e8f9" stop-opacity="0.95" />
-        <stop offset="60%" stop-color="#818cf8" stop-opacity="0.6" />
-        <stop offset="100%" stop-color="#a855f7" stop-opacity="0" />
-      </radialGradient>
-      <!-- Gradiente radial del colapso gravitacional hacia la singularidad -->
-      <radialGradient :id="`bb-collapse-${uid}`" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
-        <stop offset="30%" stop-color="#38bdf8" stop-opacity="0.9" />
-        <stop offset="70%" stop-color="#818cf8" stop-opacity="0.5" />
-        <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
-      </radialGradient>
-    </defs>
+          <!-- Dégradé volumétrique terminateur d'ombre -shade (D2 §4) -->
+          <radialGradient
+            :id="`shade-${uid}`"
+            ref="shadeEl"
+            gradientUnits="userSpaceOnUse"
+            :cx="-0.34 * R"
+            :cy="-0.42 * R"
+            :r="2.05 * R"
+          >
+            <stop offset="45%" stop-color="#000000" stop-opacity="0" />
+            <stop offset="80%" stop-color="#000000" stop-opacity="0.20" />
+            <stop offset="100%" stop-color="#000000" stop-opacity="0.34" />
+          </radialGradient>
 
-    <!-- Capa de efectos del Mini Big Bang al aparecer -->
-    <g v-if="isSpawning" class="bb-fx-layer pointer-events-none">
-      <!-- Ondas de choque concéntricas -->
-      <circle cx="0" cy="0" class="bb-shockwave bb-sw-1" />
-      <circle cx="0" cy="0" class="bb-shockwave bb-sw-2" />
-      <circle cx="0" cy="0" class="bb-shockwave bb-sw-3" />
+          <!-- Dégradés linéaires des orbites dynamiques -->
+          <linearGradient
+            v-for="arc in frame.arcs"
+            :id="`${uid}-${arc.id}`"
+            :key="arc.id"
+            gradientUnits="userSpaceOnUse"
+            :x1="arc.grad.x1"
+            :y1="arc.grad.y1"
+            :x2="arc.grad.x2"
+            :y2="arc.grad.y2"
+          >
+            <stop
+              v-for="(c, i) in arc.grad.stops"
+              :key="i"
+              :offset="i / (arc.grad.stops.length - 1)"
+              :stop-color="c"
+            />
+          </linearGradient>
 
-      <!-- Rayos de energía estelares / Starburst -->
-      <line
-        v-for="ray in SPAWN_RAYS"
-        :key="`ray-${ray.id}`"
-        :x1="ray.x1"
-        :y1="ray.y1"
-        :x2="ray.x2"
-        :y2="ray.y2"
-        :stroke="ray.color"
-        class="bb-ray"
-        :style="{ animationDelay: `${ray.delay}s` }"
-      />
+          <!-- Gradiente radial de la singularidad / Big Bang -->
+          <radialGradient :id="`bb-singularity-${uid}`" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
+            <stop offset="25%" stop-color="#67e8f9" stop-opacity="0.95" />
+            <stop offset="60%" stop-color="#818cf8" stop-opacity="0.6" />
+            <stop offset="100%" stop-color="#a855f7" stop-opacity="0" />
+          </radialGradient>
 
-      <!-- Chispas cósmicas (stardust) en 360 grados -->
-      <circle
-        v-for="spark in SPAWN_SPARKS"
-        :key="`sp-${spark.id}`"
-        cx="0"
-        cy="0"
-        :r="spark.r"
-        :fill="spark.color"
-        class="bb-spark"
-        :style="{
-          '--dx': `${spark.dx}px`,
-          '--dy': `${spark.dy}px`,
-          animationDelay: `${spark.delay}s`
-        }"
-      />
+          <!-- Gradiente radial del colapso gravitacional hacia la singularidad -->
+          <radialGradient :id="`bb-collapse-${uid}`" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
+            <stop offset="30%" stop-color="#38bdf8" stop-opacity="0.9" />
+            <stop offset="70%" stop-color="#818cf8" stop-opacity="0.5" />
+            <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
+          </radialGradient>
 
-      <!-- Destello radiante central de la singularidad -->
-      <circle cx="0" cy="0" :fill="`url(#bb-singularity-${uid})`" class="bb-singularity" />
-    </g>
+          <!-- Règles CSS dynamiques uniques par instance pour les lettres de sommeil Zzz (D2 §8) -->
+          <component :is="'style'">
+            @keyframes zAnim1_{{ uid }} {
+              0% { transform: translate(22px, -18px) scale(0.62) rotate(-8deg); opacity: 0; }
+              18% { opacity: 0.88; }
+              78% { opacity: 0.72; }
+              100% { transform: translate(42px, -64px) scale(0.88) rotate(4deg); opacity: 0; }
+            }
+            @keyframes zAnim2_{{ uid }} {
+              0% { transform: translate(34px, -34px) scale(0.72) rotate(-5deg); opacity: 0; }
+              18% { opacity: 0.92; }
+              78% { opacity: 0.76; }
+              100% { transform: translate(64px, -102px) scale(1.04) rotate(10deg); opacity: 0; }
+            }
+            @keyframes zAnim3_{{ uid }} {
+              0% { transform: translate(48px, -52px) scale(0.82) rotate(-2deg); opacity: 0; }
+              18% { opacity: 0.96; }
+              78% { opacity: 0.80; }
+              100% { transform: translate(88px, -142px) scale(1.22) rotate(16deg); opacity: 0; }
+            }
+          </component>
+        </defs>
 
-    <!-- Capa de efectos del Colapso Gravitacional / Warp a modo ventana -->
-    <g v-if="isCollapsing" class="bb-collapse-layer pointer-events-none">
-      <!-- Ondas gravitatorias de implosión / contracción hacia el centro -->
-      <circle cx="0" cy="0" class="bb-collapse-wave bb-cw-1" />
-      <circle cx="0" cy="0" class="bb-collapse-wave bb-cw-2" />
+        <!-- Capa de efectos del Mini Big Bang al aparecer -->
+        <g v-if="isSpawning" class="bb-fx-layer pointer-events-none">
+          <circle cx="0" cy="0" class="bb-shockwave bb-sw-1" />
+          <circle cx="0" cy="0" class="bb-shockwave bb-sw-2" />
+          <circle cx="0" cy="0" class="bb-shockwave bb-sw-3" />
 
-      <!-- Destello final de la singularidad al comprimirse -->
-      <circle cx="0" cy="0" :fill="`url(#bb-collapse-${uid})`" class="bb-collapse-flash" />
-    </g>
-
-    <!-- Entidad de Kyo (cuerpo, ojos, órbitas y partículas) -->
-    <g :class="{ 'bb-body-inflate': isSpawning, 'bb-body-collapse': isCollapsing }">
-      <!-- moitie arriere des orbites : dessinee avant le corps, donc occultee -->
-      <g fill="none" stroke-linecap="round">
-        <path
-          v-for="arc in frame.arcs"
-          :key="`b${arc.id}`"
-          :d="arc.back"
-          :stroke="`url(#${uid}-${arc.id})`"
-          :stroke-width="arc.width"
-          :opacity="arc.opacity"
-        />
-      </g>
-
-      <!-- particules de l'eclatement : elles passent derriere le noyau -->
-      <g v-if="frame.dotsBehind">
-        <component
-          :is="dot.d ? 'path' : 'circle'"
-          v-for="(dot, i) in frame.dots"
-          :key="`pb${i}`"
-          v-bind="dotAttrs(dot)"
-        />
-      </g>
-
-      <g :opacity="frame.bodyAlpha">
-        <!-- Corps noir pur : antialiasing direct et lisse sans frange blanche ni serrucho -->
-        <path
-          :d="frame.bodyPath"
-          :fill="ink"
-          :mask="frame.notch ? `url(#notch-${uid})` : undefined"
-        />
-
-        <!-- Yeux en blanc pur dessines au-dessus et rognes au contour du corps -->
-        <g :clip-path="`url(#clip-${uid})`" :class="{ 'bb-eyes-awake': isSpawning, 'bb-eyes-collapse': isCollapsing }">
-          <path
-            v-for="(eye, i) in frame.eyes"
-            :key="i"
-            :d="eye.d"
-            :transform="eye.matrix"
-            :opacity="eye.alpha"
-            :fill="eyeFill"
+          <line
+            v-for="ray in SPAWN_RAYS"
+            :key="`ray-${ray.id}`"
+            :x1="ray.x1"
+            :y1="ray.y1"
+            :x2="ray.x2"
+            :y2="ray.y2"
+            :stroke="ray.color"
+            class="bb-ray"
+            :style="{ animationDelay: `${ray.delay}s` }"
           />
+
+          <circle
+            v-for="spark in SPAWN_SPARKS"
+            :key="`sp-${spark.id}`"
+            cx="0"
+            cy="0"
+            :r="spark.r"
+            :fill="spark.color"
+            class="bb-spark"
+            :style="{
+              '--dx': `${spark.dx}px`,
+              '--dy': `${spark.dy}px`,
+              animationDelay: `${spark.delay}s`
+            }"
+          />
+
+          <circle cx="0" cy="0" :fill="`url(#bb-singularity-${uid})`" class="bb-singularity" />
         </g>
-      </g>
 
-      <g v-if="!frame.dotsBehind">
-        <component
-          :is="dot.d ? 'path' : 'circle'"
-          v-for="(dot, i) in frame.dots"
-          :key="`pf${i}`"
-          v-bind="dotAttrs(dot)"
-        />
-      </g>
+        <!-- Capa de efectos del Colapso Gravitacional / Warp a modo ventana -->
+        <g v-if="isCollapsing" class="bb-collapse-layer pointer-events-none">
+          <circle cx="0" cy="0" class="bb-collapse-wave bb-cw-1" />
+          <circle cx="0" cy="0" class="bb-collapse-wave bb-cw-2" />
+          <circle cx="0" cy="0" :fill="`url(#bb-collapse-${uid})`" class="bb-collapse-flash" />
+        </g>
 
-      <circle
-        v-if="frame.notif"
-        :cx="frame.notif.x"
-        :cy="frame.notif.y"
-        :r="frame.notif.r"
-        :fill="NOTIF_BLUE"
-      />
+        <!-- Entidad Kyo (cuerpo, ojos, órbitas y partículas) -->
+        <g :class="{ 'bb-body-inflate': isSpawning, 'bb-body-collapse': isCollapsing }">
+          <!-- Moitié arrière des orbites -->
+          <g fill="none" stroke-linecap="round">
+            <path
+              v-for="arc in frame.arcs"
+              :key="`b${arc.id}`"
+              :d="arc.back"
+              :stroke="`url(#${uid}-${arc.id})`"
+              :stroke-width="arc.width"
+              :opacity="arc.opacity"
+            />
+          </g>
 
-      <!-- moitie avant des orbites -->
-      <g fill="none" stroke-linecap="round">
-        <path
-          v-for="arc in frame.arcs"
-          :key="`f${arc.id}`"
-          :d="arc.front"
-          :stroke="`url(#${uid}-${arc.id})`"
-          :stroke-width="arc.width"
-          :opacity="arc.opacity"
-        />
-      </g>
-    </g>
-  </svg>
+          <!-- Particules arrière (ex: burst) -->
+          <g v-if="frame.dotsBehind">
+            <component
+              :is="dot.d ? 'path' : 'circle'"
+              v-for="(dot, i) in frame.dots"
+              :key="`pb${i}`"
+              v-bind="dotAttrs(dot)"
+            />
+          </g>
+
+          <!-- Corps volumétrique unifié (D2 §3) -->
+          <g :opacity="frame.bodyAlpha">
+            <!-- 1. Fond des yeux : silhouette sous le corps -->
+            <path :d="frame.bodyPath" :fill="eyeFill" />
+
+            <!-- 2. Encre masquée avec volume d'ombre et de lumière -->
+            <g :mask="`url(#mask-${uid})`">
+              <rect :x="-VB" :y="-VB" :width="VB * 2" :height="VB * 2" :fill="ink" />
+              <rect
+                v-if="props.volumetric"
+                :x="-VB"
+                :y="-VB"
+                :width="VB * 2"
+                :height="VB * 2"
+                :fill="`url(#shade-${uid})`"
+              />
+              <rect
+                v-if="props.volumetric"
+                :x="-VB"
+                :y="-VB"
+                :width="VB * 2"
+                :height="VB * 2"
+                :fill="`url(#light-${uid})`"
+              />
+            </g>
+
+            <!-- 3. Trait sub-pixel évitant tout effet de crénelage -->
+            <path :d="frame.bodyPath" fill="none" :stroke="ink" stroke-width="0.8" />
+          </g>
+
+          <!-- Particules avant (notes, cœurs, étincelles, goutte) -->
+          <g v-if="!frame.dotsBehind">
+            <component
+              :is="dot.d ? 'path' : 'circle'"
+              v-for="(dot, i) in frame.dots"
+              :key="`pf${i}`"
+              v-bind="dotAttrs(dot)"
+            />
+          </g>
+
+          <!-- Pastille de notification bleue -->
+          <circle
+            v-if="frame.notif"
+            :cx="frame.notif.x"
+            :cy="frame.notif.y"
+            :r="frame.notif.r"
+            :fill="NOTIF_BLUE"
+          />
+
+          <!-- Moitié avant des orbites -->
+          <g fill="none" stroke-linecap="round">
+            <path
+              v-for="arc in frame.arcs"
+              :key="`f${arc.id}`"
+              :d="arc.front"
+              :stroke="`url(#${uid}-${arc.id})`"
+              :stroke-width="arc.width"
+              :opacity="arc.opacity"
+            />
+          </g>
+
+          <!-- Zzz flottants en mode sommeil (D2 §8) -->
+          <g v-if="isSleeping" class="bloub-zzz select-none pointer-events-none">
+            <text
+              x="0"
+              y="0"
+              font-size="16"
+              fill="#818cf8"
+              stroke="#ffffff"
+              stroke-width="0.8"
+              :style="{
+                animation: `zAnim1_${uid} 3s 0s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite`
+              }"
+            >z</text>
+            <text
+              x="0"
+              y="0"
+              font-size="21"
+              fill="#a5b4fc"
+              stroke="#ffffff"
+              stroke-width="1.0"
+              :style="{
+                animation: `zAnim2_${uid} 3s 1s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite`
+              }"
+            >z</text>
+            <text
+              x="0"
+              y="0"
+              font-size="26"
+              fill="#c084fc"
+              stroke="#ffffff"
+              stroke-width="1.2"
+              :style="{
+                animation: `zAnim3_${uid} 3s 2s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite`
+              }"
+            >Z</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+  </div>
 </template>
 
 <style scoped>
+.bloub-root {
+  transform-style: preserve-3d;
+}
+
+.bloub-ground {
+  will-change: transform, opacity;
+  transform-origin: center center;
+}
+
+.bloub-zzz {
+  filter: drop-shadow(0 2px 10px rgba(129, 140, 248, 0.45));
+  font-family: ui-rounded, 'Fredoka', 'Quicksand', system-ui, sans-serif;
+  font-weight: 700;
+  paint-order: stroke fill;
+}
+
+.bloub-zzz text {
+  transform-box: view-box;
+  transform-origin: 0 0;
+}
+
 /* Contenedor del efecto Big Bang */
 .bb-fx-layer {
   transform-origin: 0 0;
@@ -945,7 +1374,6 @@ const SPAWN_SPARKS: SpawnSpark[] = Array.from({ length: 22 }, (_, i) => {
     opacity: 0.85;
   }
   48% {
-    /* Sobre-expansión asimétrica: aplastado horizontal con rebote elástico */
     transform: scaleX(1.15) scaleY(0.88) rotate(5deg);
     opacity: 1;
   }
@@ -1008,7 +1436,6 @@ const SPAWN_SPARKS: SpawnSpark[] = Array.from({ length: 22 }, (_, i) => {
     opacity: 1;
   }
   25% {
-    /* Anticipación: leve sobre-escala asimétrica (squash horizontal, stretch vertical) */
     transform: scaleX(1.10) scaleY(0.92) rotate(-5deg);
     opacity: 1;
   }

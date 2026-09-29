@@ -43,3 +43,12 @@ pub struct ChatSummary {
     pub time_label: String,
     pub is_active: bool,
 }
+
+/// Estado global del tema visual (true = Dark, false = Light)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AppTheme(pub dioxus::prelude::Signal<bool>);
+
+/// Control de visibilidad del modal de ajustes de Kyo
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IsSettingsOpen(pub dioxus::prelude::Signal<bool>);
+

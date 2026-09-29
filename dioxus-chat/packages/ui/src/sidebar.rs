@@ -9,7 +9,7 @@
 //! - Full offline Lucide-style SVG icons and dark-mode styling
 
 use dioxus::prelude::*;
-use crate::models::{ActiveView, Workspace, ChatSummary};
+use crate::models::{ActiveView, Workspace, ChatSummary, AppTheme, IsSettingsOpen};
 
 const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 
@@ -83,11 +83,11 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     // Workspaces and Views from Shared Context (no hardcoded chats or workspaces)
     let mut workspaces = try_use_context::<Signal<Vec<Workspace>>>().unwrap_or_else(|| use_signal(Vec::new));
     let active_view = try_use_context::<Signal<ActiveView>>();
-    let is_settings_open = try_use_context::<Signal<bool>>();
+    let is_settings_open = try_use_context::<IsSettingsOpen>();
     let sidecar_state = try_use_context::<Signal<crate::sidecar::SidecarState>>();
 
     // Theme state (Dark/Light) — shared via context from App
-    let mut is_dark_theme = use_context::<Signal<bool>>();
+    let mut app_theme = use_context::<AppTheme>();
 
     // Calculated style values
     let current_width = if *is_collapsed.read() { 0.0 } else { *width.read() };
@@ -170,7 +170,23 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     div {
                         class: "sidebar-header-row",
                         div {
-                            class: "sidebar-header-badge",
+                            class: "sidebar-header-badge flex items-center gap-2",
+                            // Isotipo Kyo
+                            svg {
+                                class: "w-4 h-4 text-indigo-400 flex-none",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "2.2",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                path { d: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" }
+                            }
+                            span {
+                                class: "font-semibold text-xs tracking-tight",
+                                style: "color: var(--kyo-fg-primary);",
+                                "Kyo Workspace"
+                            }
                             {
                                 let dot_style = if let Some(sc) = sidecar_state {
                                     let (dot, _, _) = sc.read().status.color_classes();
@@ -180,18 +196,16 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                 };
                                 rsx! {
                                     div {
-                                        class: "status-dot {dot_style}"
+                                        class: "flex items-center gap-1.5 text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+                                        div { class: "w-1.5 h-1.5 rounded-full {dot_style} animate-pulse" }
+                                        span { "Local Ready" }
                                     }
                                 }
-                            }
-                            span {
-                                class: "sidebar-header-title",
-                                "AI Workspace"
                             }
                         }
                         button {
                             class: "sidebar-icon-btn",
-                            title: "Collapse sidebar",
+                            title: "Colapsar barra lateral",
                             onclick: move |_| {
                                 is_collapsed.set(true);
                             },
@@ -210,55 +224,69 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         }
                     }
 
-                    // Navigation Button: "Dashboard"
-                    button {
-                        class: "sidebar-btn-nav",
-                        onclick: move |_| {
-                            if let Some(mut av) = active_view {
-                                av.set(ActiveView::Dashboard);
+                    // Navigation Button: "Panel de control"
+                    {
+                        let is_dash = active_view.map(|av| *av.read() == ActiveView::Dashboard).unwrap_or(false);
+                        rsx! {
+                            button {
+                                class: if is_dash { "sidebar-btn-nav active" } else { "sidebar-btn-nav" },
+                                onclick: move |_| {
+                                    if let Some(mut s) = is_settings_open {
+                                        s.0.set(false);
+                                    }
+                                    if let Some(mut av) = active_view {
+                                        av.set(ActiveView::Dashboard);
+                                    }
+                                },
+                                svg {
+                                    class: "w-4 h-4 text-indigo-400 flex-none",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    stroke_width: "2",
+                                    stroke_linecap: "round",
+                                    stroke_linejoin: "round",
+                                    rect { x: "3", y: "3", width: "7", height: "7", rx: "1" }
+                                    rect { x: "14", y: "3", width: "7", height: "7", rx: "1" }
+                                    rect { x: "14", y: "14", width: "7", height: "7", rx: "1" }
+                                    rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
+                                }
+                                span { "Panel de control" }
                             }
-                        },
-                        svg {
-                            class: "w-4 h-4 text-indigo-400 flex-none",
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "2",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            rect { x: "3", y: "3", width: "7", height: "7", rx: "1" }
-                            rect { x: "14", y: "3", width: "7", height: "7", rx: "1" }
-                            rect { x: "14", y: "14", width: "7", height: "7", rx: "1" }
-                            rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
                         }
-                        span { "Dashboard" }
                     }
 
-                    // Primary Button: "New conversation" (Visually highlighted)
-                    button {
-                        class: "sidebar-btn-primary group",
-                        onclick: move |_| {
-                            if let Some(mut av) = active_view {
-                                av.set(ActiveView::Chat);
+                    // Button: "Nueva conversación" (Secondary when 0 workspaces to prevent CTA conflict)
+                    {
+                        let has_no_ws = workspaces.read().is_empty();
+                        let btn_class = if has_no_ws { "sidebar-btn-nav group" } else { "sidebar-btn-primary group" };
+                        rsx! {
+                            button {
+                                class: "{btn_class}",
+                                onclick: move |_| {
+                                    if let Some(mut av) = active_view {
+                                        av.set(ActiveView::Chat);
+                                    }
+                                    if let Some(ref handler) = props.on_new_chat {
+                                        handler.call(());
+                                    }
+                                },
+                                svg {
+                                    class: "w-3.5 h-3.5 transition-transform group-hover:rotate-90",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    stroke_width: "2.5",
+                                    stroke_linecap: "round",
+                                    stroke_linejoin: "round",
+                                    path { d: "M12 5v14M5 12h14" }
+                                }
+                                span { "Nueva conversación" }
                             }
-                            if let Some(ref handler) = props.on_new_chat {
-                                handler.call(());
-                            }
-                        },
-                        svg {
-                            class: "w-3.5 h-3.5 transition-transform group-hover:rotate-90",
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "2.5",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            path { d: "M12 5v14M5 12h14" }
                         }
-                        span { "New conversation" }
                     }
 
-                    // Navigation Button: "Conversation history"
+                    // Navigation Button: "Historial de chats"
                     button {
                         class: "sidebar-btn-nav",
                         onclick: move |_| {
@@ -276,7 +304,34 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                             circle { cx: "12", cy: "12", r: "10" }
                             polyline { points: "12 6 12 12 16 14" }
                         }
-                        span { "Conversation history" }
+                        span { "Historial de chats" }
+                    }
+
+                    // Quick Search Bar placed contextually right after Historial de chats
+                    div {
+                        class: "sidebar-search-box",
+                        div {
+                            class: "sidebar-search-icon",
+                            svg {
+                                class: "w-3.5 h-3.5",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "2",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                circle { cx: "11", cy: "11", r: "8" }
+                                line { x1: "21", y1: "21", x2: "16.65", y2: "16.65" }
+                            }
+                        }
+                        input {
+                            class: "sidebar-search-input",
+                            placeholder: "Buscar conversaciones...",
+                            value: "{search_query}",
+                            oninput: move |evt| {
+                                search_query.set(evt.value());
+                            },
+                        }
                     }
 
                     // Selector/Menu: "Agent"
@@ -290,16 +345,34 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                             },
                             div {
                                 class: "flex items-center gap-2 overflow-hidden",
+                                div {
+                                    class: "relative flex items-center justify-center w-5 h-5 rounded-md bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 flex-none",
+                                    svg {
+                                        class: "w-3 h-3 fill-none stroke-current stroke-2",
+                                        view_box: "0 0 24 24",
+                                        rect { x: "4", y: "4", width: "16", height: "16", rx: "2" }
+                                        rect { x: "9", y: "9", width: "6", height: "6" }
+                                        line { x1: "9", y1: "1", x2: "9", y2: "4" }
+                                        line { x1: "15", y1: "1", x2: "15", y2: "4" }
+                                        line { x1: "9", y1: "20", x2: "9", y2: "23" }
+                                        line { x1: "15", y1: "20", x2: "15", y2: "23" }
+                                        line { x1: "20", y1: "9", x2: "23", y2: "9" }
+                                        line { x1: "20", y1: "14", x2: "23", y2: "14" }
+                                        line { x1: "1", y1: "9", x2: "4", y2: "9" }
+                                        line { x1: "1", y1: "14", x2: "4", y2: "14" }
+                                    }
+                                    div {
+                                        class: "absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 ring-1 ring-zinc-950 animate-pulse"
+                                    }
+                                }
                                 {
                                     let ag_idx = *selected_agent_idx.read();
                                     let agent_list = agents.read();
                                     let current_agent = &agent_list[ag_idx.min(agent_list.len() - 1)];
                                     rsx! {
-                                        div {
-                                            class: "w-2.5 h-2.5 rounded-full bg-gradient-to-tr {current_agent.avatar_gradient} flex-none shadow-sm"
-                                        }
                                         span {
-                                            class: "truncate font-medium text-xs text-zinc-200",
+                                            class: "truncate font-medium text-xs",
+                                            style: "color: var(--kyo-fg-primary);",
                                             "{current_agent.name}"
                                         }
                                     }
@@ -367,38 +440,34 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                 div {
                     class: "flex-1 min-h-0 overflow-y-auto px-2.5 py-3 flex flex-col gap-3",
 
-                    // Quick Search Bar
-                    div {
-                        class: "sidebar-search-box",
-                        div {
-                            class: "absolute inset-y-0 left-3 flex items-center pointer-events-none text-zinc-500",
-                            svg {
-                                class: "w-3.5 h-3.5",
-                                view_box: "0 0 24 24",
-                                fill: "none",
-                                stroke: "currentColor",
-                                stroke_width: "2",
-                                stroke_linecap: "round",
-                                stroke_linejoin: "round",
-                                circle { cx: "11", cy: "11", r: "8" }
-                                line { x1: "21", y1: "21", x2: "16.65", y2: "16.65" }
-                            }
-                        }
-                        input {
-                            class: "sidebar-search-input",
-                            placeholder: "Search chats...",
-                            value: "{search_query}",
-                            oninput: move |evt| {
-                                search_query.set(evt.value());
-                            },
-                        }
-                    }
 
-                    // Section Title: Workspaces
+                    // Section Title: Espacios de Trabajo con botón rápido de añadir
                     div {
                         class: "sidebar-section-title",
-                        span { "Workspaces" }
-                        span { class: "workspace-badge", "{workspaces.read().len()}" }
+                        span { "Espacios de Trabajo" }
+                        div {
+                            class: "flex items-center gap-1.5",
+                            span { class: "workspace-badge", "{workspaces.read().len()}" }
+                            button {
+                                class: "p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
+                                title: "Crear espacio de trabajo",
+                                onclick: move |_| {
+                                    if let Some(mut av) = active_view {
+                                        av.set(ActiveView::Dashboard);
+                                    }
+                                },
+                                svg {
+                                    class: "w-3.5 h-3.5",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    stroke_width: "2.5",
+                                    stroke_linecap: "round",
+                                    stroke_linejoin: "round",
+                                    path { d: "M12 5v14M5 12h14" }
+                                }
+                            }
+                        }
                     }
 
                     // Workspaces List (Accordion)
@@ -406,17 +475,9 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         class: "flex flex-col gap-1.5",
                         if workspaces.read().is_empty() {
                             div {
-                                class: "px-3 py-4 text-center text-xs text-zinc-500 italic space-y-2 rounded-xl bg-zinc-900/40 border border-zinc-800/40",
-                                p { "No hay espacios creados" }
-                                button {
-                                    class: "text-indigo-400 hover:text-indigo-300 text-[11px] font-medium underline cursor-pointer",
-                                    onclick: move |_| {
-                                        if let Some(mut av) = active_view {
-                                            av.set(ActiveView::Dashboard);
-                                        }
-                                    },
-                                    "Crear en Dashboard"
-                                }
+                                class: "py-2 pl-3 text-left text-xs italic",
+                                style: "color: var(--kyo-fg-muted);",
+                                p { "Sin espacios creados" }
                             }
                         } else {
                             for (ws_idx, ws) in workspaces.read().iter().enumerate() {
@@ -561,7 +622,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         title: "Ajustes de Kyo y Conexión",
                         onclick: move |_| {
                             if let Some(mut s) = is_settings_open {
-                                s.set(true);
+                                s.0.set(true);
                             }
                         },
                         svg {
@@ -580,12 +641,12 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     // Theme Toggle (Light / Dark)
                     button {
                         class: "sidebar-dock-btn",
-                        title: if *is_dark_theme.read() { "Switch to Light theme" } else { "Switch to Dark theme" },
+                        title: if *app_theme.0.read() { "Cambiar a modo claro" } else { "Cambiar a modo oscuro" },
                         onclick: move |_| {
-                            let curr = *is_dark_theme.read();
-                            is_dark_theme.set(!curr);
+                            let curr = *app_theme.0.read();
+                            app_theme.0.set(!curr);
                         },
-                        if *is_dark_theme.read() {
+                        if *app_theme.0.read() {
                             // Moon icon
                             svg {
                                 class: "w-4 h-4 text-amber-300/90",
@@ -598,9 +659,9 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                 path { d: "M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" }
                             }
                         } else {
-                            // Sun icon
+                            // Sun icon (en modo claro: amber-600 oscuro de alto contraste WCAG AA)
                             svg {
-                                class: "w-4 h-4 text-amber-400",
+                                class: "w-4 h-4 text-amber-600 hover:text-amber-500 transition-colors",
                                 view_box: "0 0 24 24",
                                 fill: "none",
                                 stroke: "currentColor",
@@ -623,8 +684,8 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     // Docs Button
                     a {
                         class: "sidebar-dock-btn",
-                        title: "Documentation",
-                        href: "https://dioxuslabs.com",
+                        title: "Documentación de Kyo",
+                        href: "https://github.com/Grivyzom/KyoDesktop#readme",
                         target: "_blank",
                         rel: "noopener noreferrer",
                         svg {
@@ -643,8 +704,8 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     // GitHub External Link Button
                     a {
                         class: "sidebar-dock-btn",
-                        title: "GitHub Repository",
-                        href: "https://github.com/DioxusLabs/dioxus",
+                        title: "Repositorio en GitHub",
+                        href: "https://github.com/Grivyzom/KyoDesktop",
                         target: "_blank",
                         rel: "noopener noreferrer",
                         svg {

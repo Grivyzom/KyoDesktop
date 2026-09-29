@@ -155,16 +155,22 @@ export interface Aim {
  * lire le lacet d'ARRIVEE de l'expression pendant que le moteur, lui, morphe
  * encore — et les yeux sautaient a chaque changement d'humeur.
  */
-export function lookTarget({ nx, ny, tour, pointer }: Aim): Look {
+export function panelLookTarget({ nx, ny, tour, pointer }: Aim): Look {
   return {
     yaw: -TURN + nx * YAW_MAX,
-    // tangage positif = regard vers le haut, alors que le y de l'ecran descend
     pitch: PITCH - ny * PITCH_MAX,
     mix: tour,
     spin: SPIN * (1 - tour),
-    // Sans pointeur la tete reste tournee vers le panneau, mais on lui rend sa
-    // derive : sinon le bot fixe un point mort, et arriver au clavier ou au
-    // tactile donnait un avatar completement immobile.
+    wander: pointer ? 0 : 1
+  }
+}
+
+export function lookTarget({ nx, ny, tour, pointer }: Aim): Look {
+  return {
+    yaw: nx * 32,
+    pitch: -ny * 22,
+    mix: tour,
+    spin: 0,
     wander: pointer ? 0 : 1
   }
 }

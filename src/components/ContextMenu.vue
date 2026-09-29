@@ -64,7 +64,7 @@ onBeforeUnmount(() => {
   >
     <button type="button" class="kyo-nav" @click="handleOpenChat">
       <KyoIcon name="chat" class="w-3.5 h-3.5" />
-      <span>Abrir chat</span>
+      <span>Panel de control</span>
     </button>
 
     <button type="button" class="kyo-nav" @click="handleOptions">

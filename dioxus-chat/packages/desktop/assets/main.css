@@ -34,47 +34,47 @@ body.dark {
     --kyo-font-family: 'Kyo', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
     /* ─── Surface / Background ─── */
-    --kyo-surface-0: #09090b;
-    --kyo-surface-1: #18181b;
-    --kyo-surface-2: #27272a;
-    --kyo-surface-3: #3f3f46;
-    --kyo-surface-glass: rgba(24, 24, 27, 0.6);
+    --kyo-surface-0: #0c0d12;
+    --kyo-surface-1: #151821;
+    --kyo-surface-2: #1c202e;
+    --kyo-surface-3: #2b3042;
+    --kyo-surface-glass: rgba(21, 24, 33, 0.75);
 
     /* ─── Sidebar ─── */
-    --kyo-sidebar-bg: #0b0c11;
+    --kyo-sidebar-bg: #11131a;
     --kyo-sidebar-border: #1a1d29;
-    --kyo-sidebar-top: #0d0e14;
-    --kyo-sidebar-dock: #0a0b10;
-    --kyo-sidebar-input-bg: #10121a;
-    --kyo-sidebar-input-border: #1c202e;
-    --kyo-sidebar-hover: #161825;
-    --kyo-sidebar-card-bg: #0f1118;
-    --kyo-sidebar-expand-bg: #12141d;
-    --kyo-sidebar-expand-border: #232738;
-    --kyo-sidebar-expand-hover: #1b1e2c;
-    --kyo-sidebar-agent-bg: #12131d;
-    --kyo-sidebar-agent-border: #202436;
-    --kyo-sidebar-agent-hover: #181a27;
-    --kyo-sidebar-dropdown-bg: #12141f;
-    --kyo-sidebar-dropdown-border: #252a3e;
-    --kyo-sidebar-nav-hover: #171924;
-    --kyo-sidebar-nav-active: #141620;
-    --kyo-sidebar-icon-hover: #1a1d2b;
-    --kyo-sidebar-icon-hover-border: #272c3f;
-    --kyo-sidebar-item-hover: #1a1d2c;
-    --kyo-sidebar-item-hover-border: #2b3149;
-    --kyo-sidebar-input-focus-bg: #141722;
-    --kyo-sidebar-badge-bg: #181b27;
-    --kyo-sidebar-badge-border: #222637;
-    --kyo-sidebar-ws-header-hover: #161824;
-    --kyo-sidebar-chat-hover: #161825;
-    --kyo-sidebar-chat-border-hover: #212538;
-    --kyo-sidebar-dock-hover: #181b28;
-    --kyo-sidebar-dock-hover-border: #262b3e;
-    --kyo-sidebar-dock-active: #131520;
-    --kyo-sidebar-ws-hover-border: #262b3c;
-    --kyo-sidebar-agent-hover-border: #2d334d;
-    --kyo-sidebar-nav-hover-border: #262a3d;
+    --kyo-sidebar-top: #0e1017;
+    --kyo-sidebar-dock: #0e1017;
+    --kyo-sidebar-input-bg: #151822;
+    --kyo-sidebar-input-border: #222637;
+    --kyo-sidebar-hover: #191c28;
+    --kyo-sidebar-card-bg: #151821;
+    --kyo-sidebar-expand-bg: #151822;
+    --kyo-sidebar-expand-border: #222637;
+    --kyo-sidebar-expand-hover: #1c202e;
+    --kyo-sidebar-agent-bg: #151822;
+    --kyo-sidebar-agent-border: #222637;
+    --kyo-sidebar-agent-hover: #1c202e;
+    --kyo-sidebar-dropdown-bg: #151822;
+    --kyo-sidebar-dropdown-border: #262c40;
+    --kyo-sidebar-nav-hover: #191c28;
+    --kyo-sidebar-nav-active: #151821;
+    --kyo-sidebar-icon-hover: #1c202e;
+    --kyo-sidebar-icon-hover-border: #2a3147;
+    --kyo-sidebar-item-hover: #1c202e;
+    --kyo-sidebar-item-hover-border: #2a3147;
+    --kyo-sidebar-input-focus-bg: #181b26;
+    --kyo-sidebar-badge-bg: #1c202e;
+    --kyo-sidebar-badge-border: #262c40;
+    --kyo-sidebar-ws-header-hover: #191c28;
+    --kyo-sidebar-chat-hover: #191c28;
+    --kyo-sidebar-chat-border-hover: #262c40;
+    --kyo-sidebar-dock-hover: #1c202e;
+    --kyo-sidebar-dock-hover-border: #262c40;
+    --kyo-sidebar-dock-active: #151821;
+    --kyo-sidebar-ws-hover-border: #262c40;
+    --kyo-sidebar-agent-hover-border: #2e354e;
+    --kyo-sidebar-nav-hover-border: #262c40;
 
     /* ─── Foreground / Text ─── */
     --kyo-fg-primary: #f4f4f5;
@@ -91,10 +91,10 @@ body.dark {
     --kyo-fg-expand: #9ca3af;
 
     /* ─── Borders ─── */
-    --kyo-border-default: #27272a;
-    --kyo-border-subtle: rgba(39, 39, 42, 0.6);
-    --kyo-border-medium: rgba(39, 39, 42, 0.8);
-    --kyo-border-hover: #3f3f46;
+    --kyo-border-default: #222634;
+    --kyo-border-subtle: rgba(255, 255, 255, 0.06);
+    --kyo-border-medium: rgba(255, 255, 255, 0.08);
+    --kyo-border-hover: #2e354e;
 
     /* ─── Accent (indigo) ─── */
     --kyo-accent: #6366f1;
@@ -126,16 +126,16 @@ body.light,
     color-scheme: light;
 
     /* ─── Surface / Background ─── */
-    --kyo-surface-0: #ffffff;
-    --kyo-surface-1: #f8fafc;
+    --kyo-surface-0: #f8fafc;
+    --kyo-surface-1: #ffffff;
     --kyo-surface-2: #f1f5f9;
     --kyo-surface-3: #e2e8f0;
     --kyo-surface-glass: rgba(255, 255, 255, 0.85);
 
     /* ─── Sidebar ─── */
-    --kyo-sidebar-bg: #f8fafc;
+    --kyo-sidebar-bg: #ffffff;
     --kyo-sidebar-border: #e2e8f0;
-    --kyo-sidebar-top: #f1f5f9;
+    --kyo-sidebar-top: #f8fafc;
     --kyo-sidebar-dock: #f8fafc;
     --kyo-sidebar-input-bg: #ffffff;
     --kyo-sidebar-input-border: #e2e8f0;
@@ -183,10 +183,10 @@ body.light,
     --kyo-fg-expand: #64748b;
 
     /* ─── Borders ─── */
-    --kyo-border-default: #e2e8f0;
-    --kyo-border-subtle: rgba(226, 232, 240, 0.8);
-    --kyo-border-medium: rgba(226, 232, 240, 0.9);
-    --kyo-border-hover: #cbd5e1;
+    --kyo-border-default: #cbd5e1;
+    --kyo-border-subtle: #e2e8f0;
+    --kyo-border-medium: #94a3b8;
+    --kyo-border-hover: #64748b;
 
     /* ─── Accent (indigo) ─── */
     --kyo-accent: #4f46e5;
@@ -444,7 +444,7 @@ html, body {
 
 .sidebar-btn-nav:hover {
     background-color: var(--kyo-sidebar-nav-hover);
-    color: #f8fafc;
+    color: var(--kyo-fg-primary);
     border-color: var(--kyo-sidebar-nav-hover-border);
 }
 
@@ -472,7 +472,7 @@ html, body {
 .sidebar-agent-button:hover {
     background-color: var(--kyo-sidebar-agent-hover);
     border-color: var(--kyo-sidebar-agent-hover-border);
-    color: #ffffff;
+    color: var(--kyo-fg-primary);
 }
 
 .sidebar-agent-dropdown {
@@ -509,7 +509,7 @@ html, body {
 
 .sidebar-agent-item:hover {
     background-color: var(--kyo-sidebar-item-hover);
-    color: #f8fafc;
+    color: var(--kyo-fg-primary);
     border-color: var(--kyo-sidebar-item-hover-border);
 }
 
@@ -522,6 +522,19 @@ html, body {
 .sidebar-search-box {
     position: relative;
     padding: 0 2px;
+}
+
+.sidebar-search-icon {
+    position: absolute;
+    top: 50%;
+    left: 11px;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    color: var(--kyo-fg-muted);
+    z-index: 2;
 }
 
 .sidebar-search-input {
@@ -589,7 +602,7 @@ html, body {
 
 .workspace-header-btn:hover {
     background-color: var(--kyo-sidebar-ws-header-hover);
-    color: #ffffff;
+    color: var(--kyo-fg-primary);
 }
 
 .workspace-badge {
@@ -644,7 +657,9 @@ html, body {
 
 .sidebar-dock {
     flex: none;
-    padding: 8px 12px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 16px;
     border-top: 1px solid var(--kyo-sidebar-border);
     background-color: var(--kyo-sidebar-dock);
     display: flex;
@@ -658,7 +673,7 @@ html, body {
     justify-content: center;
     width: 32px;
     height: 32px;
-    border-radius: 7px;
+    border-radius: 8px;
     background: transparent;
     border: 1px solid transparent;
     color: var(--kyo-fg-subtle);
@@ -669,7 +684,7 @@ html, body {
 
 .sidebar-dock-btn:hover {
     background-color: var(--kyo-sidebar-dock-hover);
-    color: #f8fafc;
+    color: var(--kyo-fg-primary);
     border-color: var(--kyo-sidebar-dock-hover-border);
 }
 
@@ -735,3 +750,133 @@ html, body {
 .border-l-4 { border-left-width: 4px; }
 .divide-y > :not([hidden]) ~ :not([hidden]) { border-top-width: 1px; }
 .divide-zinc-800\/80 > :not([hidden]) ~ :not([hidden]) { border-color: rgba(39, 39, 42, 0.8); }
+
+/* ==========================================================================
+   ENHANCED UI COMPONENTS — CTA Buttons, Onboarding & Templates
+   ========================================================================== */
+
+.kyo-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+    color: #ffffff !important;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    border: none !important;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35);
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    user-select: none;
+    text-decoration: none;
+}
+
+.kyo-btn-primary:hover {
+    background: linear-gradient(135deg, #4338ca 0%, #6d28d9 100%) !important;
+    box-shadow: 0 6px 20px rgba(79, 70, 229, 0.45);
+    transform: translateY(-1px);
+    color: #ffffff !important;
+}
+
+.kyo-btn-primary:active {
+    transform: scale(0.98);
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+}
+
+.kyo-btn-primary svg {
+    color: #ffffff !important;
+    stroke: #ffffff !important;
+    flex-shrink: 0;
+}
+
+.dashboard-empty-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--kyo-surface-2), var(--kyo-surface-1));
+    border: 1px solid var(--kyo-border-default);
+    box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.15);
+    margin-bottom: 4px;
+    flex-shrink: 0;
+}
+
+.dashboard-empty-icon svg {
+    width: 28px;
+    height: 28px;
+    color: var(--kyo-accent);
+}
+
+.template-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+    width: 100%;
+}
+
+@media (min-width: 768px) {
+    .template-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+.template-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 18px;
+    border-radius: 14px;
+    background-color: var(--kyo-surface-1);
+    border: 1px solid var(--kyo-border-default);
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+    user-select: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+:root.light .template-card,
+html.light .template-card,
+body.light .template-card,
+.light .template-card {
+    background-color: #ffffff;
+    border: 1px solid #cbd5e1;
+    box-shadow: 0 1px 4px 0 rgba(0, 0, 0, 0.05);
+}
+
+.template-card:hover {
+    background-color: var(--kyo-surface-2);
+    border-color: var(--kyo-accent);
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px -4px rgba(99, 102, 241, 0.15);
+}
+
+:root.light .template-card:hover,
+html.light .template-card:hover,
+body.light .template-card:hover,
+.light .template-card:hover {
+    background-color: #f8fafc;
+    border-color: #6366f1;
+    box-shadow: 0 10px 25px -4px rgba(99, 102, 241, 0.18);
+}
+
+.template-card:active {
+    transform: translateY(0);
+}
+
+.template-card .template-arrow {
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: all 0.18s ease;
+}
+
+.template-card:hover .template-arrow {
+    opacity: 1;
+    transform: translateX(0);
+}

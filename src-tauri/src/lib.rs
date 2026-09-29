@@ -49,7 +49,7 @@ fn get_cursor_relative(window: tauri::Window) -> (f64, f64) {
 #[tauri::command]
 async fn show_context_menu(window: WebviewWindow) -> Result<(), String> {
     let menu = MenuBuilder::new(&window)
-        .text("open_chat", "Abrir chat")
+        .text("open_chat", "Panel de control")
         .separator()
         .text("options", "Opciones")
         .separator()
@@ -857,7 +857,7 @@ pub fn run() {
         })
         .setup(|app| {
             // 1. Crear items del menú contextual de la bandeja
-            let chat_item = MenuItem::with_id(app, "open_chat", "Abrir chat", true, None::<&str>)?;
+            let chat_item = MenuItem::with_id(app, "open_chat", "Panel de control", true, None::<&str>)?;
             let opt_item = MenuItem::with_id(app, "options", "Opciones", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "Cerrar Kyo", true, None::<&str>)?;

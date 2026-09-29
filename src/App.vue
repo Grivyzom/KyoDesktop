@@ -9,6 +9,7 @@ import SettingsModal from './components/SettingsModal.vue';
 import ContextMenu from './components/ContextMenu.vue';
 import { settings, isDark } from './composables/useSettings';
 import { useKyoBridge } from './composables/useKyoBridge';
+import type { StateId } from './bot/states';
 
 const { initBridge } = useKyoBridge();
 
@@ -17,10 +18,12 @@ const appWindow = getCurrentWindow();
 const isSettingsOpen = ref(false);
 const isContextMenuOpen = ref(false);
 const contextMenuPos = ref({ x: 40, y: 70 });
+const botState = ref<StateId>('idle');
 let lastAvatarPosition: PhysicalPosition | null = null;
 let unlistenOpenSettings: (() => void) | null = null;
 let unlistenRestoreAvatar: (() => void) | null = null;
 let unlistenOpenChat: (() => void) | null = null;
+let unlistenAgentState: (() => void) | null = null;
 let isOpeningChat = false;
 const botRef = ref<InstanceType<typeof BloubBot> | null>(null);
 
@@ -155,7 +158,33 @@ onMounted(async () => {
     isSettingsOpen.value = false;
     isContextMenuOpen.value = false;
     botRef.value?.triggerSpawn();
+    botState.value = 'greet';
+    setTimeout(() => {
+      if (botState.value === 'greet') {
+        botState.value = 'idle';
+      }
+    }, 1250);
   });
+
+  // Escucha eventos de cambio de estado del agente (D5 §7)
+  unlistenAgentState = await listen<string>('agent://state', (event) => {
+    const raw = event.payload;
+    if (raw && botRef.value?.setState) {
+      botRef.value.setState(raw as StateId);
+    }
+  });
+
+  // Saludo amigable de bienvenida tras montar el avatar (D5 §2)
+  setTimeout(() => {
+    if (!isSettingsOpen.value && botState.value === 'idle') {
+      botState.value = 'greet';
+      setTimeout(() => {
+        if (botState.value === 'greet') {
+          botState.value = 'idle';
+        }
+      }, 1250);
+    }
+  }, 900);
 });
 
 onBeforeUnmount(() => {
@@ -165,6 +194,7 @@ onBeforeUnmount(() => {
   unlistenOpenSettings?.();
   unlistenOpenChat?.();
   unlistenRestoreAvatar?.();
+  unlistenAgentState?.();
 });
 </script>
 
@@ -186,6 +216,7 @@ onBeforeUnmount(() => {
     >
       <BloubBot
         ref="botRef"
+        v-model:state="botState"
         :paper="settings.eyeColor"
         :eye-color="settings.eyeColor"
         :color="settings.color"
@@ -193,6 +224,13 @@ onBeforeUnmount(() => {
         :expression="settings.expression"
         :size="settings.avatarSize"
         :follow="settings.followCursor"
+        :volumetric="settings.volumetric"
+        :interactive-pet="settings.interactivePet"
+        :interactive-jelly="settings.interactiveJelly"
+        :interactive-flinch="settings.interactiveFlinch"
+        :auto-sleep-enabled="settings.autoSleepEnabled"
+        :night-inactivity-sleep-minutes="settings.nightInactivitySleepMinutes"
+        :day-inactivity-sleep-minutes="settings.dayInactivitySleepMinutes"
       />
     </div>
 

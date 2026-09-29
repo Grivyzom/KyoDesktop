@@ -64,6 +64,126 @@ pub fn save_auth_config(token: &str, server_url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Guarda la configuración completa de sesión en memoria y en %APPDATA%/kyo/session.json.
+pub fn save_full_session_config(
+    token: &str,
+    server_url: &str,
+    username: Option<&str>,
+    email: Option<&str>,
+    profile_name: Option<&str>,
+    profile_id: Option<&str>,
+) -> Result<(), String> {
+    let trimmed_token = token.trim().to_string();
+    let trimmed_url = server_url.trim().to_string();
+
+    std::env::set_var("KYO_AUTH_TOKEN", &trimmed_token);
+    if !trimmed_url.is_empty() {
+        std::env::set_var("KYO_UPSTREAM", &trimmed_url);
+        std::env::set_var("KYO_SERVER_URL", &trimmed_url);
+    }
+    if let Some(u) = username {
+        let tu = u.trim();
+        if !tu.is_empty() {
+            std::env::set_var("KYO_USERNAME", tu);
+        }
+    }
+    if let Some(p) = profile_name {
+        let tp = p.trim();
+        if !tp.is_empty() {
+            std::env::set_var("KYO_ACTIVE_PROFILE_NAME", tp);
+        }
+    }
+    if let Some(pid) = profile_id {
+        let tpid = pid.trim();
+        if !tpid.is_empty() {
+            std::env::set_var("KYO_ACTIVE_PROFILE_ID", tpid);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let kyo_dir = PathBuf::from(appdata).join("kyo");
+        let _ = std::fs::create_dir_all(&kyo_dir);
+        let session_file = kyo_dir.join("session.json");
+
+        let mut map: serde_json::Map<String, serde_json::Value> = if session_file.is_file() {
+            std::fs::read_to_string(&session_file)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+
+        map.insert("token".to_string(), serde_json::Value::String(trimmed_token));
+        if !trimmed_url.is_empty() {
+            map.insert("server_url".to_string(), serde_json::Value::String(trimmed_url));
+        }
+        if let Some(u) = username {
+            if !u.trim().is_empty() {
+                map.insert("username".to_string(), serde_json::Value::String(u.trim().to_string()));
+            }
+        }
+        if let Some(e) = email {
+            if !e.trim().is_empty() {
+                map.insert("email".to_string(), serde_json::Value::String(e.trim().to_string()));
+            }
+        }
+        if let Some(p) = profile_name {
+            if !p.trim().is_empty() {
+                map.insert("active_profile_name".to_string(), serde_json::Value::String(p.trim().to_string()));
+            }
+        }
+        if let Some(pid) = profile_id {
+            if !pid.trim().is_empty() {
+                map.insert("active_profile_id".to_string(), serde_json::Value::String(pid.trim().to_string()));
+            }
+        }
+        map.insert(
+            "updated_at".to_string(),
+            serde_json::json!(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            ),
+        );
+
+        std::fs::write(&session_file, serde_json::Value::Object(map).to_string())
+            .map_err(|e| format!("Error guardando session.json: {e}"))?;
+    }
+
+    Ok(())
+}
+
+/// Limpia la sesión de autenticación (elimina el token y datos de usuario).
+pub fn clear_session_auth() -> Result<(), String> {
+    std::env::remove_var("KYO_AUTH_TOKEN");
+    std::env::remove_var("KYO_USERNAME");
+    std::env::remove_var("KYO_ACTIVE_PROFILE_NAME");
+    std::env::remove_var("KYO_ACTIVE_PROFILE_ID");
+
+    #[cfg(windows)]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let kyo_dir = PathBuf::from(appdata).join("kyo");
+        let session_file = kyo_dir.join("session.json");
+        if session_file.is_file() {
+            let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&session_file)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_default();
+            map.remove("token");
+            map.remove("access_token");
+            map.remove("username");
+            map.remove("email");
+            map.remove("active_profile_name");
+            map.remove("active_profile_id");
+            let _ = std::fs::write(&session_file, serde_json::Value::Object(map).to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Guarda el token en memoria y en %APPDATA%/kyo/session.json.
 pub fn save_auth_token(token: &str) -> Result<(), String> {
     save_auth_config(token, "")
@@ -167,6 +287,27 @@ pub fn load_username() -> Option<String> {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(u) = json.get("username").and_then(|t| t.as_str()) {
                         let trimmed = u.trim().to_string();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Recupera el correo de la cuenta guardado en session.json.
+pub fn load_email() -> Option<String> {
+    #[cfg(windows)]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let session_file = PathBuf::from(appdata).join("kyo").join("session.json");
+        if session_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&session_file) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(e) = json.get("email").and_then(|t| t.as_str()) {
+                        let trimmed = e.trim().to_string();
                         if !trimmed.is_empty() {
                             return Some(trimmed);
                         }
@@ -321,7 +462,7 @@ pub fn save_font_family(font: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Carga la preferencia de tipografía guardada o retorna "Kyo" (predeterminada)
+/// Carga la preferencia de tipografía guardada o retorna "Segoe UI" (predeterminada)
 pub fn load_font_family() -> String {
     #[cfg(windows)]
     if let Ok(appdata) = std::env::var("APPDATA") {
@@ -331,7 +472,7 @@ pub fn load_font_family() -> String {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(f) = json.get("font_family").and_then(|t| t.as_str()) {
                         let trimmed = f.trim();
-                        if !trimmed.is_empty() {
+                        if !trimmed.is_empty() && trimmed != "Comic Sans MS" && trimmed != "Kyo" {
                             return trimmed.to_string();
                         }
                     }
@@ -339,7 +480,7 @@ pub fn load_font_family() -> String {
             }
         }
     }
-    "Kyo".to_string()
+    "Segoe UI".to_string()
 }
 
 /// Guarda la preferencia de tema (oscuro/claro) en %APPDATA%/kyo/settings.json
@@ -499,6 +640,7 @@ pub fn get_system_fonts() -> Vec<String> {
 #[component]
 pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
     let sidecar_state = use_context::<Signal<SidecarState>>();
+    let active_view_ctx = try_use_context::<Signal<crate::models::ActiveView>>();
     let app_font_ctx = try_use_context::<AppFont>();
     let mut local_font = use_signal(load_font_family);
     let system_fonts = use_signal(get_system_fonts);
@@ -510,7 +652,7 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
         local_font.read().clone()
     };
     let mut active_tab = use_signal(|| SettingsTab::KyoConnection);
-    let is_dark_theme = try_use_context::<Signal<bool>>();
+    let app_theme = try_use_context::<crate::models::AppTheme>();
 
     // Estado del formulario de Token y Upstream
     let mut token_input = use_signal(load_auth_token);
@@ -701,6 +843,50 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
 
                         match *active_tab.read() {
                             SettingsTab::KyoConnection => rsx! {
+                                // Acceso directo al Panel de Control
+                                div {
+                                    class: "p-3.5 rounded-xl border flex items-center justify-between gap-3 bg-indigo-950/20 border-indigo-500/30",
+                                    div {
+                                        class: "flex items-center gap-2.5",
+                                        div {
+                                            class: "w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400",
+                                            svg {
+                                                class: "w-4 h-4",
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: "2",
+                                                rect { x: "3", y: "3", width: "7", height: "7", rx: "1" }
+                                                rect { x: "14", y: "3", width: "7", height: "7", rx: "1" }
+                                                rect { x: "14", y: "14", width: "7", height: "7", rx: "1" }
+                                                rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
+                                            }
+                                        }
+                                        div {
+                                            span { class: "font-semibold text-zinc-100 block", "Vista Panel de Control" }
+                                            span { class: "text-zinc-400 text-[11px]", "Gestiona la conexión y token en la vista principal" }
+                                        }
+                                    }
+                                    button {
+                                        class: "flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors cursor-pointer shrink-0",
+                                        onclick: move |_| {
+                                            is_open.set(false);
+                                            if let Some(mut av) = active_view_ctx {
+                                                av.set(crate::models::ActiveView::Dashboard);
+                                            }
+                                        },
+                                        span { "Abrir Panel" }
+                                        svg {
+                                            class: "w-3 h-3",
+                                            view_box: "0 0 24 24",
+                                            fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "2",
+                                            path { d: "M5 12h14M12 5l7 7-7 7" }
+                                        }
+                                    }
+                                }
+
                                 // Sección: Estado del Sidecar
                                 div {
                                     class: "p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 space-y-3",
@@ -965,14 +1151,14 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
                                             div {
                                                 class: "flex items-center gap-1.5 p-1 rounded-xl bg-zinc-900 border border-zinc-800",
                                                 button {
-                                                    class: if is_dark_theme.map(|t| *t.read()).unwrap_or(true) {
+                                                    class: if app_theme.map(|t| *t.0.read()).unwrap_or(true) {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-100 shadow-sm transition-all"
                                                     } else {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                                                     },
                                                     onclick: move |_| {
-                                                        if let Some(mut t) = is_dark_theme {
-                                                            t.set(true);
+                                                        if let Some(mut t) = app_theme {
+                                                            t.0.set(true);
                                                         }
                                                     },
                                                     svg {
@@ -986,14 +1172,14 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
                                                     span { "Oscuro" }
                                                 }
                                                 button {
-                                                    class: if !is_dark_theme.map(|t| *t.read()).unwrap_or(true) {
+                                                    class: if !app_theme.map(|t| *t.0.read()).unwrap_or(true) {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-100 shadow-sm transition-all"
                                                     } else {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                                                     },
                                                     onclick: move |_| {
-                                                        if let Some(mut t) = is_dark_theme {
-                                                            t.set(false);
+                                                        if let Some(mut t) = app_theme {
+                                                            t.0.set(false);
                                                         }
                                                     },
                                                     svg {

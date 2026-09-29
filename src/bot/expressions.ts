@@ -158,35 +158,44 @@ export const EXPRESSIONS: BotExpression[] = [
     eyes: pair(0.3, 0.12)
   },
   {
-    // paupières à moitié tombées : on passe par `open`, donc l'écrasement
-    // vertical à l'écran, le même mécanisme que le clignement
+    // paupières à moitié tombées : fente douce avec inclinaison relaxée
     id: 'somnolent',
-    gaze: { yaw: 6, pitch: -9, roll: -3 },
+    gaze: { yaw: 4, pitch: -12, roll: -3 },
     split: 16,
-    eyes: pair(0.2, 0.42, 0, 0.42)
+    eyes: pair(0.24, 0.42, 5, 0.32)
   }
 ]
 
 export const EXPRESSION_BY_ID = new Map<string, BotExpression>(EXPRESSIONS.map((e) => [e.id, e]))
 export const DEFAULT_EXPRESSION = 'neutre'
 
-const lerpEyeCfg = (a: EyeCfg, b: EyeCfg, t: number): EyeCfg => ({
-  w: lerp(a.w, b.w, t),
-  h: lerp(a.h, b.h, t),
-  tilt: lerp(a.tilt ?? 0, b.tilt ?? 0, t),
-  open: lerp(a.open, b.open, t)
-})
+const defaultEyeCfg: EyeCfg = { w: 0.186, h: 0.412, open: 1, tilt: 0 }
+
+const lerpEyeCfg = (a?: EyeCfg, b?: EyeCfg, t: number = 0): EyeCfg => {
+  const ea = a ?? defaultEyeCfg
+  const eb = b ?? defaultEyeCfg
+  return {
+    w: lerp(ea.w ?? 0.186, eb.w ?? 0.186, t),
+    h: lerp(ea.h ?? 0.412, eb.h ?? 0.412, t),
+    tilt: lerp(ea.tilt ?? 0, eb.tilt ?? 0, t),
+    open: lerp(ea.open ?? 1, eb.open ?? 1, t)
+  }
+}
 
 /** Interpolation de deux expressions : le changement se fait en glissant. */
 export function blendExpression(a: BotExpression, b: BotExpression, t: number): BotExpression {
+  const safeA = a ?? EXPRESSIONS[0]!
+  const safeB = b ?? EXPRESSIONS[0]!
+  const eyesA = safeA.eyes ?? [defaultEyeCfg, defaultEyeCfg]
+  const eyesB = safeB.eyes ?? [defaultEyeCfg, defaultEyeCfg]
   return {
-    id: b.id,
+    id: safeB.id,
     gaze: {
-      yaw: lerp(a.gaze.yaw, b.gaze.yaw, t),
-      pitch: lerp(a.gaze.pitch, b.gaze.pitch, t),
-      roll: lerp(a.gaze.roll, b.gaze.roll, t)
+      yaw: lerp(safeA.gaze?.yaw ?? 0, safeB.gaze?.yaw ?? 0, t),
+      pitch: lerp(safeA.gaze?.pitch ?? 0, safeB.gaze?.pitch ?? 0, t),
+      roll: lerp(safeA.gaze?.roll ?? 0, safeB.gaze?.roll ?? 0, t)
     },
-    split: lerp(a.split, b.split, t),
-    eyes: [lerpEyeCfg(a.eyes[0], b.eyes[0], t), lerpEyeCfg(a.eyes[1], b.eyes[1], t)]
+    split: lerp(safeA.split ?? EYE_SPLIT, safeB.split ?? EYE_SPLIT, t),
+    eyes: [lerpEyeCfg(eyesA[0], eyesB[0], t), lerpEyeCfg(eyesA[1], eyesB[1], t)]
   }
 }

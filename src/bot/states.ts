@@ -4,19 +4,22 @@ import {
   DOT_PEAK,
   DOT_R,
   DOT_X,
+  HEART_GLYPH,
+  NOTE_GLYPH,
   NOTIF_ANGLE,
   NOTIF_DIST,
   NOTIF_MARGIN,
   NOTIF_POP,
   NOTIF_R,
   RINGS,
+  SPARKLE_GLYPH,
   SWOOSH,
   particles,
   type ArcSpec,
   type DotRender
 } from './decor'
 import { EYE_H, EYE_SPLIT, EYE_W, REST_GAZE, type HeadGaze } from './face'
-import { TAU, clamp, easings } from './math'
+import { TAU, clamp, easings, lerp } from './math'
 import {
   circle,
   hullOfCircles,
@@ -63,9 +66,10 @@ export interface Pose {
   dotsBehind: boolean
 }
 
-const pair = (w: number, h: number): [EyeCfg, EyeCfg] => [
-  { w, h, open: 1 },
-  { w, h, open: 1 }
+const eye = (w: number, h: number, tilt = 0, open = 1): EyeCfg => ({ w, h, tilt, open })
+const pair = (w: number, h: number, tilt = 0, open = 1): [EyeCfg, EyeCfg] => [
+  eye(w, h, tilt, open),
+  eye(w, h, -tilt, open)
 ]
 
 function base(over: Partial<Pose> = {}): Pose {
@@ -164,6 +168,17 @@ export type StateId =
   | 'comet'
   /** transition d'interface, pas une animation du catalogue : hors `SEQUENCE` */
   | 'swirl'
+  | 'dance'
+  | 'cuddle'
+  | 'deepsleep'
+  | 'deafen'
+  | 'wakeup'
+  | 'listen'
+  | 'talk'
+  | 'ponder'
+  | 'joy'
+  | 'oops'
+  | 'greet'
 
 export interface StateDef {
   id: StateId
@@ -362,14 +377,21 @@ export const STATES: StateDef[] = [
     duration: 2.4,
     morph: 0.5,
     baseFace: false,
-    baseBody: false,
+    baseBody: true,
     blinkIn: false,
-    pose: (t) =>
-      base({
-        // Rebond vertical mesure : +-0.19 autour de +0.11, periode 0.6 s.
-        sil: circle(0.1585, { cy: 0.11 + Math.sin(t * (TAU / 0.6)) * 0.19 }),
-        eyeAlpha: 0
+    pose: (t) => {
+      const breath = Math.sin(t * (TAU / 2.4)) * 0.032
+      return base({
+        sil: circle(1, {
+          sy: 1 + breath,
+          sx: 1 - breath * 0.5,
+          cy: 0.02
+        }),
+        gaze: { yaw: 0, pitch: -15, roll: 0 },
+        split: 16,
+        eyes: pair(0.24, 0.42, 5, 0.32)
       })
+    }
   },
 
   {
@@ -569,6 +591,574 @@ export const STATES: StateDef[] = [
         arcs: COMET_RIBBONS.map((s, i) => ({ id: `cm${i}`, seed: s, t, opacity: fade }))
       })
     }
+  },
+  {
+    id: 'dance',
+    duration: 12,
+    morph: 0.35,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const BEAT = 0.5
+      const PHRASE = 1.0
+      const cycleNorm = (val: number, p: number) => (((val % p) + p) % p) / p
+      const hopOf = (time: number) => Math.abs(Math.sin(Math.PI * cycleNorm(time, BEAT)))
+      const landingOf = (time: number) => {
+        const p = cycleNorm(time, BEAT)
+        return Math.exp(-Math.pow(Math.min(p, 1 - p) / 0.13, 2))
+      }
+
+      interface DanceMove {
+        offX: number
+        offY: number
+        rot: number
+        sx: number
+        sy: number
+        yaw: number
+        pitch: number
+        roll: number
+        eyeW: number
+        eyeH: number
+        eyeTilt: number
+      }
+
+      const move0 = (time: number): DanceMove => {
+        const sway = Math.sin(TAU * cycleNorm(time, PHRASE))
+        const swayLag = Math.sin(TAU * cycleNorm(time - 0.09, PHRASE))
+        const hop = hopOf(time)
+        const landing = landingOf(time)
+        const stretch = 2 * hop - 1
+        return {
+          offX: 0.05 * sway,
+          offY: -0.075 * hop + 0.015 * landing,
+          rot: 0.1 * sway,
+          sx: 1 - 0.08 * stretch + 0.12 * landing,
+          sy: 1 + 0.10 * stretch - 0.14 * landing,
+          yaw: REST_GAZE.yaw + 5 * swayLag,
+          pitch: REST_GAZE.pitch - 4 * hop,
+          roll: REST_GAZE.roll + 9 * swayLag,
+          eyeW: 0.24,
+          eyeH: 0.22,
+          eyeTilt: 18
+        }
+      }
+
+      const move1 = (time: number): DanceMove => {
+        const twist = Math.sin(TAU * cycleNorm(time, PHRASE))
+        const pulse = landingOf(time)
+        return {
+          offX: 0,
+          offY: 0.02 * pulse,
+          rot: 0.2 * twist,
+          sx: 1 + 0.08 * Math.abs(twist),
+          sy: 1 - 0.04 * Math.abs(twist),
+          yaw: REST_GAZE.yaw - 14 * twist,
+          pitch: REST_GAZE.pitch,
+          roll: REST_GAZE.roll + 4 * twist,
+          eyeW: 0.23,
+          eyeH: 0.24,
+          eyeTilt: 18 + 4 * pulse
+        }
+      }
+
+      const move2 = (time: number, loc: number): DanceMove => {
+        const phase2 = cycleNorm(time, 2.0)
+        const sideSway = Math.sin(TAU * phase2)
+        const vel = Math.cos(TAU * phase2)
+        const hop = hopOf(time)
+        const spinProgress = clamp((loc - 2.0) / 1.0)
+        const spin = easings.easeInOutCubic(spinProgress)
+        const spinAngle = spin >= 1 ? 0 : 360 * spin
+        return {
+          offX: 0.13 * sideSway,
+          offY: -0.06 * hop,
+          rot: 0.12 * vel,
+          sx: 1 - 0.05 * hop,
+          sy: 1 + 0.06 * hop,
+          yaw: REST_GAZE.yaw + 10 * vel + spinAngle,
+          pitch: REST_GAZE.pitch,
+          roll: REST_GAZE.roll + 6 * vel,
+          eyeW: 0.24,
+          eyeH: 0.22,
+          eyeTilt: 16
+        }
+      }
+
+      const move3 = (time: number): DanceMove => {
+        const p = cycleNorm(time, BEAT)
+        const dip = Math.exp(-Math.pow(Math.min(p, 1 - p) / 0.18, 2))
+        const grooveRoll = Math.sin(TAU * cycleNorm(time - 0.12, PHRASE))
+        return {
+          offX: 0.03 * grooveRoll,
+          offY: 0.06 * dip,
+          rot: 0.06 * grooveRoll,
+          sx: 1 + 0.08 * dip,
+          sy: 1 - 0.09 * dip,
+          yaw: REST_GAZE.yaw + 4 * grooveRoll,
+          pitch: REST_GAZE.pitch - 8 * dip,
+          roll: REST_GAZE.roll + 15 * grooveRoll,
+          eyeW: 0.26,
+          eyeH: 0.16 + 0.04 * dip,
+          eyeTilt: 20 + 4 * dip
+        }
+      }
+
+      const MOVES = [
+        (time: number, _l: number) => move0(time),
+        (time: number, _l: number) => move1(time),
+        (time: number, l: number) => move2(time, l),
+        (time: number, _l: number) => move3(time)
+      ]
+
+      const tc = ((t % 12) + 12) % 12
+      const step = Math.floor(tc / 3) % 4
+      const local = tc - step * 3
+      const curMove = MOVES[step]!(t, local)
+      const blendK = easings.easeInOutCubic(clamp(local / 0.25))
+      const prevStep = (step + 3) % 4
+      const prevMove = MOVES[prevStep]!(t, local + 3)
+
+      const m: DanceMove =
+        blendK >= 1
+          ? curMove
+          : {
+              offX: lerp(prevMove.offX, curMove.offX, blendK),
+              offY: lerp(prevMove.offY, curMove.offY, blendK),
+              rot: lerp(prevMove.rot, curMove.rot, blendK),
+              sx: lerp(prevMove.sx, curMove.sx, blendK),
+              sy: lerp(prevMove.sy, curMove.sy, blendK),
+              yaw: lerp(prevMove.yaw, curMove.yaw, blendK),
+              pitch: lerp(prevMove.pitch, curMove.pitch, blendK),
+              roll: lerp(prevMove.roll, curMove.roll, blendK),
+              eyeW: lerp(prevMove.eyeW, curMove.eyeW, blendK),
+              eyeH: lerp(prevMove.eyeH, curMove.eyeH, blendK),
+              eyeTilt: lerp(prevMove.eyeTilt, curMove.eyeTilt, blendK)
+            }
+
+      const noteColors = ['#818cf8', '#38bdf8', '#c084fc']
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const n = cycleNorm(t - i * 0.5, 1.5)
+        const side = i % 2 === 0 ? 1 : -1
+        return {
+          x: side * (0.66 + 0.08 * Math.sin(TAU * n)),
+          y: 0.16 - 1.12 * n,
+          r: 0.1,
+          d: NOTE_GLYPH,
+          rot: side * 12 + Math.sin(TAU * n) * 8,
+          color: noteColors[i % noteColors.length]!,
+          depth: 0.7,
+          opacity: clamp(n / 0.15) * clamp((1 - n) / 0.2)
+        }
+      })
+
+      return base({
+        sil: circle(1, { rot: m.rot, sx: m.sx, sy: m.sy }),
+        offX: m.offX,
+        offY: m.offY,
+        gaze: { yaw: m.yaw, pitch: m.pitch, roll: m.roll },
+        split: 17,
+        eyes: [
+          { w: m.eyeW, h: m.eyeH, open: 1, tilt: m.eyeTilt },
+          { w: m.eyeW, h: m.eyeH, open: 1, tilt: -m.eyeTilt }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'cuddle',
+    duration: 0.9,
+    morph: 0.22,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const c = ((t % 0.9) + 0.9) % 0.9
+      const pat = Math.exp(-Math.pow(c / 0.12, 2))
+      const bounce = Math.sin(3 * Math.PI * c) * Math.exp(-3.2 * c)
+      const offY = 0.045 + 0.02 * pat + 0.015 * bounce
+      const sx = 1.05 + 0.08 * pat
+      const sy = 0.95 - 0.07 * pat
+      const heartColors = ['#f43f5e', '#fb7185']
+      const dots: DotRender[] = [0, 1].map((i) => {
+        const u = (((t - i * 0.5) % 1.0) + 1.0) % 1.0
+        const side = i === 0 ? 0.45 : -0.42
+        return {
+          x: side + Math.sin(u * TAU) * 0.06,
+          y: -0.2 - u * 0.9,
+          r: 0.11,
+          d: HEART_GLYPH,
+          rot: Math.sin(u * TAU) * 14,
+          color: heartColors[i]!,
+          depth: 0.85,
+          opacity: clamp(u / 0.2) * clamp((1 - u) / 0.2)
+        }
+      })
+      return base({
+        sil: circle(1, { sx, sy }),
+        offY,
+        gaze: { yaw: 0, pitch: -8, roll: 0 },
+        split: 16,
+        eyes: [
+          { w: 0.36, h: 0.09, open: 1, tilt: 22 },
+          { w: 0.36, h: 0.09, open: 1, tilt: -22 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'deepsleep',
+    duration: 3.2,
+    morph: 0.45,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const breath = Math.sin(t * (TAU / 3.2)) * 0.048
+      const u = (((t % 2.4) + 2.4) % 2.4) / 2.4
+      const dots: DotRender[] = [
+        {
+          x: -0.75 + Math.sin(u * TAU) * 0.05,
+          y: -0.2 - u * 0.85,
+          r: 0.09,
+          d: HEART_GLYPH,
+          rot: -12 + Math.sin(u * TAU) * 10,
+          color: '#fb7185',
+          depth: 0.8,
+          opacity: clamp(u / 0.2) * clamp((1 - u) / 0.25)
+        }
+      ]
+      return base({
+        sil: circle(1, {
+          sx: 1 - breath * 0.4,
+          sy: 1 + breath,
+          cy: 0.04
+        }),
+        gaze: { yaw: -6, pitch: -18, roll: -3 },
+        split: 16,
+        eyes: [
+          { w: 0.32, h: 0.10, open: 1, tilt: 24 },
+          { w: 0.32, h: 0.10, open: 1, tilt: -24 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'deafen',
+    duration: 2.4,
+    morph: 0.4,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const breath = Math.sin(t * (TAU / 2.4)) * 0.032
+      const earmuffs: DotRender[] = [
+        { x: -0.82, y: 0.04, r: 0.22, opacity: 1, color: '#818cf8' },
+        { x: 0.82, y: 0.04, r: 0.22, opacity: 1, color: '#818cf8' },
+        { x: -0.74, y: 0.04, r: 0.12, opacity: 0.9, color: '#a5b4fc' },
+        { x: 0.74, y: 0.04, r: 0.12, opacity: 0.9, color: '#a5b4fc' }
+      ]
+      return base({
+        sil: circle(1, { sy: 1 + breath, sx: 1 - breath * 0.5, cy: 0.03 }),
+        gaze: { yaw: 0, pitch: -15, roll: 0 },
+        split: 16,
+        eyes: pair(0.24, 0.42, 5, 0.32),
+        dots: earmuffs
+      })
+    }
+  },
+
+  {
+    id: 'wakeup',
+    duration: 1.35,
+    minDuration: 1.35,
+    morph: 0.25,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      let sx = 1
+      let sy = 1
+      let rot = 0
+      let eyeW = EYE_W
+      let eyeH = EYE_H
+      let open = 1
+      if (t < 0.5) {
+        const p = t / 0.5
+        const stretch = Math.sin(p * Math.PI)
+        sy = 1 + 0.15 * stretch
+        sx = 1 - 0.12 * stretch
+        open = 0.32 + 0.28 * p
+        eyeW = 0.20
+        eyeH = 0.30
+      } else if (t < 0.9) {
+        const p = (t - 0.45) / 0.45
+        rot = Math.sin((t - 0.45) * 8 * Math.PI) * 0.08 * (1 - p)
+        sx = 1 + 0.04 * Math.sin(t * 8 * Math.PI)
+        sy = 1 - 0.04 * Math.sin(t * 8 * Math.PI)
+        open = 0.6 + 0.4 * p
+        eyeW = 0.22
+        eyeH = 0.45
+      } else {
+        const p = clamp((t - 0.85) / 0.5)
+        const ease = easings.easeOutCubic(p)
+        open = 1
+        eyeW = lerp(0.22, EYE_W, ease)
+        eyeH = lerp(0.45, EYE_H, ease)
+      }
+      return base({
+        sil: circle(1, { sx, sy, rot }),
+        gaze: {
+          yaw: REST_GAZE.yaw * clamp(t / 1.0),
+          pitch: REST_GAZE.pitch * clamp(t / 1.0),
+          roll: REST_GAZE.roll * clamp(t / 1.0)
+        },
+        eyes: pair(eyeW, eyeH, 0, open)
+      })
+    }
+  },
+
+  {
+    id: 'listen',
+    duration: 1.6,
+    morph: 0.35,
+    baseFace: true,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const rollTilt = -12 * clamp(t / 0.45)
+      const nod = Math.sin(t * (TAU / 1.6)) * 6
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const u = (((t - i * 0.35) % 1.2) + 1.2) % 1.2 / 1.2
+        const dist = 1.34 - u * 0.48
+        const angle = (-18 * Math.PI) / 180
+        return {
+          x: Math.cos(angle) * dist,
+          y: Math.sin(angle) * dist,
+          r: 0.04 + u * 0.04,
+          color: '#38bdf8',
+          depth: 0.8,
+          opacity: clamp(u / 0.2) * clamp((1 - u) / 0.25)
+        }
+      })
+      return base({
+        gaze: { yaw: 8, pitch: REST_GAZE.pitch + nod, roll: REST_GAZE.roll + rollTilt },
+        split: 16,
+        eyes: pair(0.20, 0.42),
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'talk',
+    duration: 2,
+    morph: 0.3,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const syllable = Math.max(0, Math.sin(TAU * 3.6 * t))
+      const mod =
+        (0.7 + 0.3 * Math.sin(TAU * 0.37 * t)) *
+        (0.8 + 0.2 * Math.sin(TAU * 0.23 * t))
+      const bounce = syllable * mod
+      const sy = 1 + 0.09 * bounce
+      const sx = 1 - 0.06 * bounce
+      const offY = -0.04 * bounce
+      return base({
+        sil: circle(1, { sx, sy }),
+        offY,
+        gaze: {
+          yaw: REST_GAZE.yaw + Math.sin(TAU * 0.8 * t) * 6,
+          pitch: REST_GAZE.pitch + bounce * 4,
+          roll: REST_GAZE.roll + Math.sin(TAU * 1.2 * t) * 3
+        },
+        split: 16,
+        eyes: pair(0.20 + 0.04 * bounce, 0.42 - 0.06 * bounce)
+      })
+    }
+  },
+
+  {
+    id: 'ponder',
+    duration: 2.4,
+    morph: 0.4,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const bubbleCoords = [
+        { x: 0.66, y: -0.80, r: 0.07 },
+        { x: 0.86, y: -1.02, r: 0.10 },
+        { x: 1.10, y: -1.20, r: 0.14 }
+      ]
+      const cycleTime = ((t % 2.4) + 2.4) % 2.4
+      const dots: DotRender[] = bubbleCoords.map((b, i) => {
+        const start = 0.2 + i * 0.3
+        const alive = clamp((cycleTime - start) / 0.25) * clamp((2.2 - cycleTime) / 0.3)
+        return {
+          x: b.x,
+          y: b.y + Math.sin(t * 2 + i) * 0.02,
+          r: b.r * alive,
+          color: '#818cf8',
+          depth: 0.8,
+          opacity: 0.85 * alive
+        }
+      })
+      return base({
+        gaze: { yaw: -14, pitch: 36, roll: -8 },
+        split: 16,
+        eyes: [
+          { w: 0.18, h: 0.42, open: 1 },
+          { w: 0.22, h: 0.26, open: 0.7 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'joy',
+    duration: 1.6,
+    morph: 0.25,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const c = ((t % 1.6) + 1.6) % 1.6
+      let offY = 0
+      let sx = 1
+      let sy = 1
+      let sparkOpacity = 0
+      if (c < 0.22) {
+        const p = c / 0.22
+        offY = 0.06 * p
+        sy = 1 - 0.12 * p
+        sx = 1 + 0.12 * p
+      } else if (c < 0.62) {
+        const p = (c - 0.22) / 0.40
+        const jump = Math.sin(p * Math.PI)
+        offY = -0.22 * jump
+        sy = 1 + 0.14 * jump
+        sx = 1 - 0.10 * jump
+      } else if (c < 0.78) {
+        const p = (c - 0.62) / 0.16
+        const squash = Math.sin(p * Math.PI)
+        offY = 0.04 * squash
+        sy = 1 - 0.15 * squash
+        sx = 1 + 0.15 * squash
+        sparkOpacity = Math.sin(p * Math.PI)
+      } else {
+        const p = (c - 0.78) / 0.82
+        const decay = Math.exp(-4 * p)
+        offY = -0.03 * Math.sin(p * TAU * 2) * decay
+        sy = 1 + 0.05 * Math.sin(p * TAU * 2) * decay
+        sx = 1 - 0.05 * Math.sin(p * TAU * 2) * decay
+        sparkOpacity = Math.max(0, 1 - p * 3)
+      }
+
+      const sparkColors = ['#f59e0b', '#fbbf24', '#f59e0b']
+      const angles = [(-90 - 48) * (Math.PI / 180), -90 * (Math.PI / 180), (-90 + 48) * (Math.PI / 180)]
+      const dots: DotRender[] =
+        sparkOpacity > 0.01
+          ? angles.map((ang, i) => ({
+              x: Math.cos(ang) * 1.15,
+              y: Math.sin(ang) * 1.15,
+              r: 0.12,
+              d: SPARKLE_GLYPH,
+              rot: (ang * 180) / Math.PI + c * 40,
+              color: sparkColors[i]!,
+              depth: 0.9,
+              opacity: sparkOpacity
+            }))
+          : []
+
+      return base({
+        sil: circle(1, { sx, sy }),
+        offY,
+        gaze: { yaw: 0, pitch: 18, roll: 0 },
+        split: 17,
+        eyes: [
+          { w: 0.26, h: 0.18, open: 1, tilt: 18 },
+          { w: 0.26, h: 0.18, open: 1, tilt: -18 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'oops',
+    duration: 2.2,
+    morph: 0.3,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const c = ((t % 2.2) + 2.2) % 2.2
+      const shake = Math.sin(TAU * 3.2 * c) * Math.exp(-4.5 * (c % 1.1))
+      const tearProgress = (c % 1.1) / 1.1
+      const dots: DotRender[] = [
+        {
+          x: 0.48,
+          y: -0.2 + tearProgress * 0.42,
+          r: 0.10,
+          d: TEAR,
+          rot: 180,
+          color: '#60a5fa',
+          depth: 0.85,
+          opacity: clamp(tearProgress / 0.2) * clamp((1 - tearProgress) / 0.2)
+        }
+      ]
+      return base({
+        sil: circle(1, { rot: shake * 0.12 }),
+        gaze: { yaw: shake * 18, pitch: -8, roll: -shake * 6 },
+        split: 16,
+        eyes: [
+          { w: 0.20, h: 0.38, open: 1, tilt: 12 },
+          { w: 0.24, h: 0.26, open: 0.85, tilt: -8 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'greet',
+    duration: 1.2,
+    minDuration: 1.2,
+    morph: 0.2,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const p = clamp(t / 1.2)
+      const hop = Math.sin(p * Math.PI) * Math.exp(-2.2 * p)
+      const offY = -0.16 * hop
+      const sx = 1 - 0.08 * hop
+      const sy = 1 + 0.12 * hop
+      return base({
+        sil: circle(1, { sx, sy }),
+        offY,
+        gaze: {
+          yaw: lerp(0, REST_GAZE.yaw, p),
+          pitch: lerp(12, REST_GAZE.pitch, p),
+          roll: lerp(0, REST_GAZE.roll, p)
+        },
+        split: EYE_SPLIT,
+        eyes: [
+          { w: lerp(0.24, EYE_W, p), h: lerp(0.36, EYE_H, p), open: 1, tilt: lerp(10, 0, p) },
+          { w: lerp(0.24, EYE_W, p), h: lerp(0.36, EYE_H, p), open: 1, tilt: lerp(-10, 0, p) }
+        ]
+      })
+    }
   }
 ]
 
@@ -595,7 +1185,18 @@ export const POSES: Record<StateId, number> = {
   orbit: 1.2,
   swirl: 0.5,
   burst: 0.45,
-  comet: 1.15
+  comet: 1.15,
+  dance: 1.5,
+  cuddle: 0.45,
+  deepsleep: 1.6,
+  deafen: 1.2,
+  wakeup: 0.9,
+  listen: 0.8,
+  talk: 1.0,
+  ponder: 1.2,
+  joy: 0.65,
+  oops: 1.1,
+  greet: 0.6
 }
 
 export const SEQUENCE: StateId[] = [
@@ -614,3 +1215,15 @@ export const SEQUENCE: StateId[] = [
   'burst',
   'comet'
 ]
+
+const NO_FOLLOW = new Set<StateId>(['sleep', 'deepsleep', 'deafen', 'wakeup', 'cuddle'])
+
+/**
+ * Dit si le regard suit le curseur dans cet état.
+ * Les états avec cara de repos (baseFace), alert, swirl et dance suivent le curseur.
+ */
+export function followsCursor(id: StateId): boolean {
+  if (NO_FOLLOW.has(id)) return false
+  const def = STATE_BY_ID.get(id)
+  return !!(def?.baseFace || id === 'alert' || id === 'dance' || id === 'swirl')
+}

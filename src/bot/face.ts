@@ -65,16 +65,17 @@ function spin(u: Vec3, v: Vec3, angle: number): [Vec3, Vec3] {
  * L'indice 0 est l'oeil interieur, l'indice 1 l'oeil exterieur.
  */
 export function eyePoses(gaze: HeadGaze, scale: number, split = EYE_SPLIT): [EyePose, EyePose] {
+  const safeGaze = gaze ?? REST_GAZE
   let f: Vec3 = [0, 0, 1]
   let right: Vec3 = [1, 0, 0]
   let down: Vec3 = [0, 1, 0]
 
   // lacet : forward bascule vers right
-  ;[f, right] = spin(f, right, deg(gaze.yaw))
+  ;[f, right] = spin(f, right, deg(safeGaze.yaw ?? REST_GAZE.yaw))
   // tangage : forward bascule vers le haut (donc a l'oppose de down)
-  ;[down, f] = spin(down, f, deg(gaze.pitch))
+  ;[down, f] = spin(down, f, deg(safeGaze.pitch ?? REST_GAZE.pitch))
   // roulis : la tete penche dans son propre plan
-  ;[right, down] = spin(right, down, deg(gaze.roll))
+  ;[right, down] = spin(right, down, deg(safeGaze.roll ?? REST_GAZE.roll))
 
   const build = (side: number): EyePose => {
     const [ef, er] = spin(f, right, deg(split * side))

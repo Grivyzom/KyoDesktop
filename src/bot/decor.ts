@@ -283,3 +283,23 @@ export const NOTIF_POP = 1.14
  * La marge est constante (0.054 R) et suit l'echelle du corps.
  */
 export const NOTIF_MARGIN = 0.054
+
+/* ------------------------------------------------------------- glyphes décor */
+
+/**
+ * Corchea musical centrada en el origen, en unidades de radio (R=1).
+ */
+export const NOTE_GLYPH =
+  'M-0.08,0.06 C-0.08,0.12 -0.02,0.16 0.05,0.14 C0.11,0.12 0.14,0.06 0.12,0 L0.12,-0.12 C0.12,-0.16 0.15,-0.18 0.19,-0.15 C0.23,-0.12 0.22,-0.06 0.22,-0.04 L0.22,-0.16 C0.22,-0.20 0.16,-0.22 0.10,-0.18 L0.10,0.02 C0.08,0.01 0.05,0.01 0.02,0.02 C-0.04,0.04 -0.08,0.01 -0.08,0.06 Z'
+
+/**
+ * Corazón centrado en el origen, en unidades de radio (R=1).
+ */
+export const HEART_GLYPH =
+  'M0,0.14 C-0.12,0.02 -0.22,-0.08 -0.16,-0.18 C-0.11,-0.25 -0.02,-0.18 0,-0.10 C0.02,-0.18 0.11,-0.25 0.16,-0.18 C0.22,-0.08 0.12,0.02 0,0.14 Z'
+
+/**
+ * Destello de 4 puntas centrado en el origen, en unidades de radio (R=1).
+ */
+export const SPARKLE_GLYPH =
+  'M0,-0.18 Q0.02,-0.02 0.18,0 Q0.02,0.02 0,0.18 Q-0.02,0.02 -0.18,0 Q-0.02,-0.02 0,-0.18 Z'
