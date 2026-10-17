@@ -119,6 +119,9 @@ let blockStart = 0
 let lastSampleClock = -Infinity
 let lastActivityClock = 0
 
+// Cache de la MediaQuery para evitar recrearla en cada frame (L4)
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+
 // Références DOM pour écritures directes (zéro saccade, bypass réactivité Vue)
 const rotatorEl = ref<HTMLDivElement | null>(null)
 const groundEl = ref<HTMLDivElement | null>(null)
@@ -590,7 +593,7 @@ function tick(ms: number) {
 
   // Cadencement adaptatif (D2 §10)
   const isReducedMotion =
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+    reducedMotionQuery.matches ||
     document.documentElement.classList.contains('reduce-motion')
 
   const targetFps = isReducedMotion ? 12 : (clock - lastCursorMove < 1.0 ? 60 : 30)

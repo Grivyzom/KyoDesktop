@@ -185,7 +185,7 @@ fn start_avatar_drag(window: WebviewWindow) -> Result<(), String> {
                     last_y = target_y;
                 }
 
-                std::thread::sleep(Duration::from_millis(4));
+                std::thread::sleep(Duration::from_millis(16));
             }
         });
 
@@ -272,6 +272,24 @@ pub struct SessionConfig {
     pub updated_at: Option<u64>,
 }
 
+/// Directorio estándar multiplataforma para datos persistentes de Kyo
+/// (%APPDATA%\kyo en Windows, ~/.config/kyo en Linux, ~/Library/Application Support/kyo en macOS).
+pub fn get_kyo_data_dir() -> Option<std::path::PathBuf> {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return Some(std::path::PathBuf::from(appdata).join("kyo"));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(std::path::PathBuf::from(xdg).join("kyo"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        #[cfg(target_os = "macos")]
+        return Some(std::path::PathBuf::from(home).join("Library").join("Application Support").join("kyo"));
+        #[cfg(not(target_os = "macos"))]
+        return Some(std::path::PathBuf::from(home).join(".config").join("kyo"));
+    }
+    None
+}
+
 #[tauri::command]
 fn save_session_config(
     token: String,
@@ -282,27 +300,13 @@ fn save_session_config(
     email: Option<String>,
 ) -> Result<(), String> {
     let trimmed_token = token.trim().to_string();
-    std::env::set_var("KYO_AUTH_TOKEN", &trimmed_token);
+    // NOTA: No usar std::env::set_var en Tauri (multithreaded) — es UB en Rust.
+    // La configuración se persiste en session.json y se inyecta vía Command::env
+    // al lanzar subprocesos (ver launch_dioxus_chat).
 
     let trimmed_url = server_url.as_ref().map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
-    if let Some(ref url) = trimmed_url {
-        std::env::set_var("KYO_UPSTREAM", url);
-        std::env::set_var("KYO_SERVER_URL", url);
-    }
 
-    if let Some(ref pid) = active_profile_id {
-        std::env::set_var("KYO_ACTIVE_PROFILE_ID", pid);
-    }
-    if let Some(ref pname) = active_profile_name {
-        std::env::set_var("KYO_ACTIVE_PROFILE_NAME", pname);
-    }
-    if let Some(ref u) = username {
-        std::env::set_var("KYO_USERNAME", u);
-    }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let kyo_dir = std::path::Path::new(&appdata).join("kyo");
+    if let Some(kyo_dir) = get_kyo_data_dir() {
         let _ = std::fs::create_dir_all(&kyo_dir);
         let session_file = kyo_dir.join("session.json");
 
@@ -357,77 +361,53 @@ fn save_session_token(token: String) -> Result<(), String> {
 fn get_session_config() -> SessionConfig {
     let mut config = SessionConfig::default();
 
-    if let Ok(token) = std::env::var("KYO_AUTH_TOKEN") {
-        let trimmed = token.trim().to_string();
-        if !trimmed.is_empty() {
-            config.token = Some(trimmed);
-        }
-    }
-    if let Ok(url) = std::env::var("KYO_UPSTREAM").or_else(|_| std::env::var("KYO_SERVER_URL")) {
-        let trimmed = url.trim().to_string();
-        if !trimmed.is_empty() {
-            config.server_url = Some(trimmed);
-        }
-    }
-    if let Ok(pid) = std::env::var("KYO_ACTIVE_PROFILE_ID") {
-        let trimmed = pid.trim().to_string();
-        if !trimmed.is_empty() {
-            config.active_profile_id = Some(trimmed);
-        }
-    }
-    if let Ok(pname) = std::env::var("KYO_ACTIVE_PROFILE_NAME") {
-        let trimmed = pname.trim().to_string();
-        if !trimmed.is_empty() {
-            config.active_profile_name = Some(trimmed);
-        }
-    }
-    if let Ok(u) = std::env::var("KYO_USERNAME") {
-        let trimmed = u.trim().to_string();
-        if !trimmed.is_empty() {
-            config.username = Some(trimmed);
-        }
-    }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_file = std::path::Path::new(&appdata).join("kyo").join("session.json");
+    // 1. Leer desde session.json como fuente principal de verdad en cualquier SO
+    if let Some(kyo_dir) = get_kyo_data_dir() {
+        let session_file = kyo_dir.join("session.json");
         if session_file.is_file() {
             if let Ok(content) = std::fs::read_to_string(&session_file) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if config.token.is_none() {
-                        if let Some(token) = json.get("token").or_else(|| json.get("access_token")).and_then(|t| t.as_str()) {
-                            config.token = Some(token.to_string());
-                        }
+                    if let Some(token) = json.get("token").or_else(|| json.get("access_token")).and_then(|t| t.as_str()) {
+                        config.token = Some(token.to_string());
                     }
-                    if config.server_url.is_none() {
-                        if let Some(url) = json.get("server_url").or_else(|| json.get("upstream")).and_then(|u| u.as_str()) {
-                            config.server_url = Some(url.to_string());
-                        }
+                    if let Some(url) = json.get("server_url").or_else(|| json.get("upstream")).and_then(|u| u.as_str()) {
+                        config.server_url = Some(url.to_string());
                     }
-                    if config.active_profile_id.is_none() {
-                        if let Some(pid) = json.get("active_profile_id").and_then(|p| p.as_str()) {
-                            config.active_profile_id = Some(pid.to_string());
-                        }
+                    if let Some(pid) = json.get("active_profile_id").and_then(|p| p.as_str()) {
+                        config.active_profile_id = Some(pid.to_string());
                     }
-                    if config.active_profile_name.is_none() {
-                        if let Some(pname) = json.get("active_profile_name").and_then(|p| p.as_str()) {
-                            config.active_profile_name = Some(pname.to_string());
-                        }
+                    if let Some(pname) = json.get("active_profile_name").and_then(|p| p.as_str()) {
+                        config.active_profile_name = Some(pname.to_string());
                     }
-                    if config.username.is_none() {
-                        if let Some(u) = json.get("username").and_then(|p| p.as_str()) {
-                            config.username = Some(u.to_string());
-                        }
+                    if let Some(u) = json.get("username").and_then(|p| p.as_str()) {
+                        config.username = Some(u.to_string());
                     }
-                    if config.email.is_none() {
-                        if let Some(e) = json.get("email").and_then(|p| p.as_str()) {
-                            config.email = Some(e.to_string());
-                        }
+                    if let Some(e) = json.get("email").and_then(|p| p.as_str()) {
+                        config.email = Some(e.to_string());
                     }
                     if let Some(ts) = json.get("updated_at").and_then(|v| v.as_u64()) {
                         config.updated_at = Some(ts);
                     }
                 }
+            }
+        }
+    }
+
+    // 2. Variables de entorno como bootstrap inicial (ej: set por el sistema al arrancar)
+    //    Solo rellenan campos que no estén ya definidos desde session.json
+    if config.token.is_none() {
+        if let Ok(token) = std::env::var("KYO_AUTH_TOKEN") {
+            let trimmed = token.trim().to_string();
+            if !trimmed.is_empty() {
+                config.token = Some(trimmed);
+            }
+        }
+    }
+    if config.server_url.is_none() {
+        if let Ok(url) = std::env::var("KYO_UPSTREAM").or_else(|_| std::env::var("KYO_SERVER_URL")) {
+            let trimmed = url.trim().to_string();
+            if !trimmed.is_empty() {
+                config.server_url = Some(trimmed);
             }
         }
     }
@@ -463,11 +443,55 @@ pub fn restore_avatar(app: &tauri::AppHandle) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Conexión con Dioxus Chat: Detección, Enfoque y Lanzamiento de Ventana
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Localiza el binario ejecutable de Dioxus Chat (`desktop` o `desktop.exe`) de forma segura y multiplataforma.
+pub fn resolve_dioxus_chat_exe() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    let bin_name = if cfg!(windows) { "desktop.exe" } else { "desktop" };
+
+    // 1. Relativo al ejecutable actual (mismo directorio o ancestros)
+    if let Ok(cur_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = cur_exe.parent() {
+            candidates.push(exe_dir.join(bin_name));
+            candidates.push(exe_dir.join("dioxus-chat").join("target").join("release").join(bin_name));
+            candidates.push(exe_dir.join("dioxus-chat").join(bin_name));
+        }
+        let mut cur = cur_exe.clone();
+        for _ in 0..5 {
+            if cur.pop() {
+                candidates.push(cur.join(bin_name));
+                candidates.push(cur.join("dioxus-chat").join("target").join("release").join(bin_name));
+                candidates.push(cur.join("dioxus-chat").join("target").join("debug").join(bin_name));
+                candidates.push(cur.join("dioxus-chat").join("target").join("dx").join("desktop").join("debug").join("windows").join("app").join(bin_name));
+                candidates.push(cur.join("dioxus-chat").join("target").join("dx").join("desktop").join("release").join("windows").join("app").join(bin_name));
+                candidates.push(cur.join("dioxus-chat").join(bin_name));
+            }
+        }
+    }
+
+    // 2. Rutas fijas de desarrollo
+    candidates.push(std::path::PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\release\desktop.exe"));
+    candidates.push(std::path::PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\debug\desktop.exe"));
+    candidates.push(std::path::PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\dx\desktop\debug\windows\app\desktop.exe"));
+
+    // Filtrar solo los ejecutables existentes
+    let mut existing: Vec<std::path::PathBuf> = candidates.into_iter().filter(|p| p.is_file()).collect();
+
+    // Priorizar el binario más recientemente modificado/compilado
+    existing.sort_by(|a, b| {
+        let time_b = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let time_a = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        time_b.cmp(&time_a)
+    });
+
+    existing.into_iter().next()
+}
+
 #[cfg(windows)]
 mod win32_chat {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -614,59 +638,9 @@ mod win32_chat {
         }
     }
 
-    pub fn resolve_dioxus_chat_exe() -> Option<PathBuf> {
-        let mut candidates = Vec::new();
-
-        // 1. Relativo al ejecutable actual (mismo directorio o ancestros)
-        if let Ok(cur_exe) = std::env::current_exe() {
-            if let Some(exe_dir) = cur_exe.parent() {
-                candidates.push(exe_dir.join("desktop.exe"));
-                candidates.push(exe_dir.join("dioxus-chat/target/release/desktop.exe"));
-                candidates.push(exe_dir.join("dioxus-chat/desktop.exe"));
-            }
-            let mut cur = cur_exe.clone();
-            for _ in 0..5 {
-                if cur.pop() {
-                    candidates.push(cur.join("desktop.exe"));
-                    candidates.push(cur.join("dioxus-chat/target/release/desktop.exe"));
-                    candidates.push(cur.join("dioxus-chat/target/debug/desktop.exe"));
-                    candidates.push(cur.join("dioxus-chat/target/dx/desktop/debug/windows/app/desktop.exe"));
-                    candidates.push(cur.join("dioxus-chat/target/dx/desktop/release/windows/app/desktop.exe"));
-                    candidates.push(cur.join("dioxus-chat/desktop.exe"));
-                }
-            }
-        }
-
-        // 2. Relativo al directorio de trabajo
-        if let Ok(cwd) = std::env::current_dir() {
-            candidates.push(cwd.join("dioxus-chat/target/release/desktop.exe"));
-            candidates.push(cwd.join("dioxus-chat/target/debug/desktop.exe"));
-            candidates.push(cwd.join("dioxus-chat/target/dx/desktop/debug/windows/app/desktop.exe"));
-            candidates.push(cwd.join("dioxus-chat/target/dx/desktop/release/windows/app/desktop.exe"));
-            candidates.push(cwd.join("dioxus-chat/desktop.exe"));
-        }
-
-        // 3. Rutas fijas de desarrollo
-        candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\release\desktop.exe"));
-        candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\debug\desktop.exe"));
-        candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\dioxus-chat\target\dx\desktop\debug\windows\app\desktop.exe"));
-
-        // Filtrar solo los ejecutables existentes
-        let mut existing: Vec<PathBuf> = candidates.into_iter().filter(|p| p.is_file()).collect();
-
-        // Priorizar el binario más recientemente compilado
-        existing.sort_by(|a, b| {
-            let time_b = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            let time_a = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            time_b.cmp(&time_a)
-        });
-
-        existing.into_iter().next()
-    }
-
     pub fn launch_dioxus_chat(app: &tauri::AppHandle) -> Result<(), String> {
-        let exe = resolve_dioxus_chat_exe()
-            .ok_or_else(|| "No se encontró el ejecutable desktop.exe de Dioxus Chat".to_string())?;
+        let exe = crate::resolve_dioxus_chat_exe()
+            .ok_or_else(|| "No se encontró el ejecutable desktop de Dioxus Chat".to_string())?;
 
         let parent = exe.parent().unwrap_or(Path::new("."));
         let mut cmd = Command::new(&exe);
@@ -769,6 +743,56 @@ mod win32_chat {
     }
 }
 
+#[cfg(not(windows))]
+mod non_windows_chat {
+    use std::path::Path;
+    use std::process::Command;
+
+    pub fn launch_and_watch(app: tauri::AppHandle) -> Result<(), String> {
+        let exe = crate::resolve_dioxus_chat_exe()
+            .ok_or_else(|| "No se encontró el ejecutable desktop de Dioxus Chat".to_string())?;
+
+        let parent = exe.parent().unwrap_or(Path::new("."));
+        let mut cmd = Command::new(&exe);
+        cmd.current_dir(parent);
+
+        // Si el sidecar Go ya tiene puerto asignado, inyectarlo en el entorno
+        if let Some(port) = crate::sidecar::get_sidecar_port(&app) {
+            cmd.env("KYO_SIDECAR_PORT", port.to_string());
+        }
+
+        // Inyectar configuración de sesión guardada
+        let cfg = crate::get_session_config();
+        if let Some(token) = cfg.token {
+            cmd.env("KYO_AUTH_TOKEN", token);
+        }
+        if let Some(url) = cfg.server_url {
+            cmd.env("KYO_UPSTREAM", &url);
+            cmd.env("KYO_SERVER_URL", &url);
+        }
+        if let Some(pid) = cfg.active_profile_id {
+            cmd.env("KYO_ACTIVE_PROFILE_ID", pid);
+        }
+        if let Some(pname) = cfg.active_profile_name {
+            cmd.env("KYO_ACTIVE_PROFILE_NAME", pname);
+        }
+        if let Some(u) = cfg.username {
+            cmd.env("KYO_USERNAME", u);
+        }
+
+        let mut child = cmd.spawn()
+            .map_err(|e| format!("Error al iniciar {}: {}", exe.display(), e))?;
+
+        // Monitorear proceso hijo: al cerrar la ventana, restaurar el avatar
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            crate::restore_avatar(&app);
+        });
+
+        Ok(())
+    }
+}
+
 /// Comando invocado desde el frontend al hacer doble clic sobre el avatar o desde menús
 #[tauri::command]
 async fn open_dioxus_chat(app: tauri::AppHandle) -> Result<String, String> {
@@ -792,7 +816,8 @@ async fn open_dioxus_chat(app: tauri::AppHandle) -> Result<String, String> {
     }
     #[cfg(not(windows))]
     {
-        Err("Plataforma no soportada".to_string())
+        non_windows_chat::launch_and_watch(app)?;
+        Ok("launched".to_string())
     }
 }
 

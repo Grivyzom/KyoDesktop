@@ -74,7 +74,12 @@ function safeBase64UrlDecode(str: string): string {
     const decoder = new TextDecoder('utf-8');
     return decoder.decode(bytes);
   } catch {
-    return atob(base64);
+    // Fallback compatible UTF-8: decodificar via escape/decodeURIComponent
+    try {
+      return decodeURIComponent(escape(atob(base64)));
+    } catch {
+      return atob(base64);
+    }
   }
 }
 

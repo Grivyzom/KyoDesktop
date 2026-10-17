@@ -20,6 +20,6 @@
     "core:window:allow-set-size-constraints",
     "core:menu:default",
     "core:tray:default",
-    "shell:default"
+    "shell:allow-open"
   ]
 }

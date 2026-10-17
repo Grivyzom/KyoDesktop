@@ -25,7 +25,7 @@ function wheel(hue: number, s = 0.55, l = 0.62): string {
               ? [x, 0, c]
               : [c, 0, x]
   const hex = (v: number) =>
-    Math.round((v + m) * 255)
+    Math.max(0, Math.min(255, Math.round((v + m) * 255)))
       .toString(16)
       .padStart(2, '0')
   return `#${hex(r)}${hex(g)}${hex(b)}`
@@ -152,9 +152,20 @@ export function arcRender(seed: ArcSeed, t: number, scale: number, id: string, o
       y1: r2(seed.cy * scale - gy),
       x2: r2(seed.cx * scale + gx),
       y2: r2(seed.cy * scale + gy),
-      stops: [wheel(seed.hue), wheel(seed.hue + seed.hueSpan * 0.5), wheel(seed.hue + seed.hueSpan)]
+      stops: getArcStops(seed)
     }
   }
+}
+
+/** Cache de gradientes precalculados para evitar conversiones HSL y GC intensivo a 60 FPS */
+const STOPS_CACHE = new WeakMap<ArcSeed, string[]>()
+function getArcStops(seed: ArcSeed): string[] {
+  let cached = STOPS_CACHE.get(seed)
+  if (!cached) {
+    cached = [wheel(seed.hue), wheel(seed.hue + seed.hueSpan * 0.5), wheel(seed.hue + seed.hueSpan)]
+    STOPS_CACHE.set(seed, cached)
+  }
+  return cached
 }
 
 /* ---------------------------------------------------------------- anneaux */

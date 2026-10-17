@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Contador atómico monotónico para garantizar IDs únicos de workspace.
+static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Vista activa en el área principal de la aplicación.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,10 +26,11 @@ impl Workspace {
     pub fn new(name: impl Into<String>, description: impl Into<String>, icon_color: impl Into<String>) -> Self {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_millis())
             .unwrap_or(0);
+        let seq = WS_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
-            id: format!("ws-{ts}"),
+            id: format!("ws-{ts}-{seq}"),
             name: name.into(),
             description: description.into(),
             icon_color: icon_color.into(),

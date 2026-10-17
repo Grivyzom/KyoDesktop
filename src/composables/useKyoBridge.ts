@@ -30,6 +30,9 @@ const lastProbeResult = ref<ConnectionProbeResult | null>(null);
 const isVerifying = ref<boolean>(false);
 const isInitialized = ref(false);
 
+// Contador para ignorar respuestas obsoletas de refreshHealth concurrentes (M4)
+let healthRequestId = 0;
+
 const accountInfo = ref<KyoAccountInfo | null>(null);
 const availableProfiles = ref<KyoProfileInfo[]>([]);
 const activeProfileId = ref<string | null>(null);
@@ -76,10 +79,13 @@ export function useKyoBridge() {
     const urlToTest = targetUrl !== undefined ? targetUrl : serverUrl.value;
     const tokenToTest = targetToken !== undefined ? targetToken : jwtToken.value;
 
+    const currentRequestId = ++healthRequestId;
     isVerifying.value = true;
 
     // 1. Probar Sidecar Local en Go
     const port = sidecarPort.value ?? (await getSidecarPort());
+    if (currentRequestId !== healthRequestId) { isVerifying.value = false; return null; }
+
     if (port) {
       sidecarPort.value = port;
       const start = performance.now();
@@ -105,6 +111,8 @@ export function useKyoBridge() {
     // 2. Si no hay sidecar o no responde, sondeo activo contra la aplicación web / endpoint MCP remoto
     healthData.value = null;
     const probe = await probeMcpConnection(urlToTest, tokenToTest);
+    if (currentRequestId !== healthRequestId) { isVerifying.value = false; return probe; }
+
     lastProbeResult.value = probe;
     latencyMs.value = probe.reachable ? probe.latencyMs : null;
 

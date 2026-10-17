@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted } from 'vue';
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { settings, resetSettings, isDark, applyFontFamily } from '../composables/useSettings';
 import { useKyoBridge } from '../composables/useKyoBridge';
 import {
@@ -233,6 +233,10 @@ async function executeDangerAction() {
   showDangerConfirm.value = false;
   dangerActionType.value = null;
 }
+
+onBeforeUnmount(() => {
+  if (saveTimeout) clearTimeout(saveTimeout);
+});
 </script>
 
 <template>

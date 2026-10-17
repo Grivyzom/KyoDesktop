@@ -93,14 +93,8 @@ pub fn find_sidecar_executable() -> Option<PathBuf> {
         }
     }
 
-    // 2. Relativo al directorio de trabajo actual (CWD)
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("go-server.exe"));
-        candidates.push(cwd.join("binaries").join("go-server-x86_64-pc-windows-msvc.exe"));
-        candidates.push(cwd.join("src-tauri").join("binaries").join("go-server-x86_64-pc-windows-msvc.exe"));
-        candidates.push(cwd.join("src-tauri").join("target").join("release").join("go-server.exe"));
-        candidates.push(cwd.join("sidecar").join("go-server.exe"));
-    }
+    // NOTA: No buscar en current_dir() por seguridad — evita ejecución de
+    // binarios maliciosos colocados en el directorio de trabajo.
 
     // 3. Rutas fijas del proyecto de desarrollo
     candidates.push(PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\src-tauri\binaries\go-server-x86_64-pc-windows-msvc.exe"));
@@ -237,8 +231,14 @@ pub fn spawn_sidecar_service(mut sidecar_state: Signal<SidecarState>) {
         Ok(mut child) => {
             let stdout = child.stdout.take();
 
-            // Guardar child en mutex global para cierre garantizado al salir
+            // Guardar child en mutex global para cierre garantizado al salir.
+            // Terminar proceso anterior si existe para evitar zombies.
             if let Ok(mut lock) = SIDECAR_CHILD.lock() {
+                if let Some(mut prev) = lock.take() {
+                    eprintln!("[Sidecar] Terminando instancia anterior de go-server...");
+                    let _ = prev.kill();
+                    let _ = prev.wait();
+                }
                 *lock = Some(child);
             }
 
@@ -259,7 +259,7 @@ pub fn spawn_sidecar_service(mut sidecar_state: Signal<SidecarState>) {
                                     println!("[Sidecar] ¡Handshake recibido! Puerto asignado: {port}");
                                     std::env::set_var("KYO_SIDECAR_PORT", port.to_string());
                                     let _ = tx.send(port);
-                                    break;
+                                    // NO hacer break: seguir leyendo stdout para evitar broken pipe en Go
                                 }
                             }
                         }

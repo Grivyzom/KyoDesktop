@@ -131,6 +131,9 @@ function onWindowMouseDown(e: MouseEvent) {
   }
 }
 
+// Bandera para detectar desmontaje antes de que las promesas de listen resuelvan (H5)
+let isMounted = true;
+
 onMounted(async () => {
   initBridge();
   window.addEventListener('keydown', onGlobalKeydown);
@@ -146,15 +149,21 @@ onMounted(async () => {
 
   // Escucha el evento emitido por Rust cuando el usuario hace clic en "Opciones"
   // tanto desde el menú contextual del avatar como desde el ícono del tray.
-  unlistenOpenSettings = await listen('open-settings', () => {
+  listen('open-settings', () => {
     openSettings();
+  }).then(fn => {
+    if (isMounted) unlistenOpenSettings = fn;
+    else fn();
   });
   // Escucha la solicitud de apertura de chat desde el tray icon
-  unlistenOpenChat = await listen('request-open-chat', () => {
+  listen('request-open-chat', () => {
     openDioxusChat();
+  }).then(fn => {
+    if (isMounted) unlistenOpenChat = fn;
+    else fn();
   });
   // Escucha la restauración del avatar tras cerrar Dioxus Chat o la ventana
-  unlistenRestoreAvatar = await listen('restore-avatar', () => {
+  listen('restore-avatar', () => {
     isSettingsOpen.value = false;
     isContextMenuOpen.value = false;
     botRef.value?.triggerSpawn();
@@ -164,14 +173,20 @@ onMounted(async () => {
         botState.value = 'idle';
       }
     }, 1250);
+  }).then(fn => {
+    if (isMounted) unlistenRestoreAvatar = fn;
+    else fn();
   });
 
   // Escucha eventos de cambio de estado del agente (D5 §7)
-  unlistenAgentState = await listen<string>('agent://state', (event) => {
+  listen<string>('agent://state', (event) => {
     const raw = event.payload;
     if (raw && botRef.value?.setState) {
       botRef.value.setState(raw as StateId);
     }
+  }).then(fn => {
+    if (isMounted) unlistenAgentState = fn;
+    else fn();
   });
 
   // Saludo amigable de bienvenida tras montar el avatar (D5 §2)
@@ -188,6 +203,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  isMounted = false;
   window.removeEventListener('keydown', onGlobalKeydown);
   window.removeEventListener('contextmenu', onGlobalContextMenu);
   window.removeEventListener('mousedown', onWindowMouseDown);

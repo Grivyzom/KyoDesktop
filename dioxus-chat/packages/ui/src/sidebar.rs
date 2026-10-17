@@ -484,9 +484,8 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                 {
                                     let is_expanded = ws.is_expanded;
                                     let query = search_query.read().to_lowercase();
-                                    let filtered_chats: Vec<ChatSummary> = ws.chats.iter()
+                                    let filtered_chats: Vec<&ChatSummary> = ws.chats.iter()
                                         .filter(|c| query.is_empty() || c.title.to_lowercase().contains(&query))
-                                        .cloned()
                                         .collect();
 
                                     rsx! {

@@ -306,12 +306,14 @@ pub fn ChatContainer() -> Element {
         // Find failed message and its preceding user message
         let msgs = messages.read();
         let mut retry_prompt = None;
+        let mut prev_user_msg_id = None;
 
         for (idx, msg) in msgs.iter().enumerate() {
             if msg.id == failed_msg_id && idx > 0 {
                 if let Some(prev) = msgs.get(idx - 1) {
                     if prev.role == Role::User {
                         retry_prompt = Some(prev.content.clone());
+                        prev_user_msg_id = Some(prev.id.clone());
                     }
                 }
                 break;
@@ -319,8 +321,8 @@ pub fn ChatContainer() -> Element {
         }
         drop(msgs);
 
-        // Remove the failed message
-        messages.write().retain(|m| m.id != failed_msg_id);
+        // Remove the failed message and its preceding user message (send_prompt will re-append it)
+        messages.write().retain(|m| m.id != failed_msg_id && Some(&m.id) != prev_user_msg_id.as_ref());
 
         if let Some(prompt) = retry_prompt {
             send_prompt(prompt);
@@ -700,17 +702,31 @@ pub fn FormattedMessageContent(content: String, is_streaming: bool) -> Element {
             class: "space-y-3 whitespace-pre-wrap leading-relaxed",
             for (idx, part) in parts.iter().enumerate() {
                 if idx % 2 == 1 {
-                    // Code block
-                    div {
-                        class: "my-2 rounded-xl bg-zinc-950 border border-zinc-800 overflow-hidden text-xs font-mono shadow-sm",
-                        div {
-                            class: "px-3 py-1.5 bg-zinc-900/90 border-b border-zinc-800 flex justify-between items-center text-zinc-400 text-[11px]",
-                            span { "rust" }
-                            span { class: "text-[10px] uppercase tracking-wider text-zinc-500", "Code Snippet" }
-                        }
-                        pre {
-                            class: "p-3 overflow-x-auto text-zinc-200 leading-normal",
-                            code { "{part.trim()}" }
+                    {
+                        let (lang, code_text) = if let Some((first_line, rest)) = part.split_once('\n') {
+                            let trimmed_lang = first_line.trim();
+                            if !trimmed_lang.is_empty() && trimmed_lang.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '+' || c == '#') {
+                                (trimmed_lang, rest)
+                            } else {
+                                ("code", *part)
+                            }
+                        } else {
+                            ("code", *part)
+                        };
+
+                        rsx! {
+                            div {
+                                class: "my-2 rounded-xl bg-zinc-950 border border-zinc-800 overflow-hidden text-xs font-mono shadow-sm",
+                                div {
+                                    class: "px-3 py-1.5 bg-zinc-900/90 border-b border-zinc-800 flex justify-between items-center text-zinc-400 text-[11px]",
+                                    span { "{lang}" }
+                                    span { class: "text-[10px] uppercase tracking-wider text-zinc-500", "Code Snippet" }
+                                }
+                                pre {
+                                    class: "p-3 overflow-x-auto text-zinc-200 leading-normal",
+                                    code { "{code_text.trim()}" }
+                                }
+                            }
                         }
                     }
                 } else {

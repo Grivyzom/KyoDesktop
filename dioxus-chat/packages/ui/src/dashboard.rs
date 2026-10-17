@@ -81,6 +81,27 @@ pub async fn probe_kyo_backend(
     if clean_url.is_empty() {
         return Err(("La URL del servidor no puede estar vacía.".to_string(), false, None));
     }
+
+    // Validación de protocolo seguro para evitar transmisión de token en texto plano
+    if clean_url.starts_with("http://") {
+        let is_local = clean_url.starts_with("http://localhost")
+            || clean_url.starts_with("http://127.0.0.1")
+            || clean_url.starts_with("http://[::1]");
+        if !is_local {
+            return Err((
+                "Por seguridad, las conexiones remotas deben utilizar HTTPS para proteger su token.".to_string(),
+                false,
+                None,
+            ));
+        }
+    } else if !clean_url.starts_with("https://") {
+        return Err((
+            "Protocolo no válido. La URL debe comenzar con https:// (o http:// para red local).".to_string(),
+            false,
+            None,
+        ));
+    }
+
     let trimmed_token = token.trim().to_string();
     if trimmed_token.is_empty() {
         return Err((
@@ -272,12 +293,6 @@ pub fn Dashboard() -> Element {
     // Estado principal de la conexión
     let mut connection_status = use_signal(|| ConnectionStatus::Disconnected);
 
-    // Análisis estático del JWT en tiempo real
-    let jwt_info = use_memo(move || {
-        let t = token_input.read();
-        analyze_token(&t)
-    });
-
     // Auto-verificación al cargar la vista si ya existe un token almacenado
     let mut has_run_initial_check = use_signal(|| false);
     use_effect(move || {
@@ -417,11 +432,11 @@ pub fn Dashboard() -> Element {
 
             // ── Cabecera Superior del Panel ─────────────────────────────────
             header {
-                class: "flex-none h-14 border-b px-6 flex items-center justify-between z-10",
+                class: "flex-none h-14 border-b px-8 flex items-center justify-between z-10",
                 style: "background-color: var(--kyo-surface-1); border-color: var(--kyo-border-default);",
 
                 div {
-                    class: "flex items-center gap-3",
+                    class: "flex items-center gap-3.5",
                     div {
                         class: "w-8 h-8 rounded-xl flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-sm",
                         svg {
@@ -439,14 +454,14 @@ pub fn Dashboard() -> Element {
                         }
                     }
                     div {
-                        class: "flex items-center gap-2",
+                        class: "flex items-center gap-2.5",
                         h1 {
                             class: "font-semibold text-sm tracking-tight",
                             style: "color: var(--kyo-fg-primary);",
                             "Panel de control"
                         }
                         span {
-                            class: "text-[10px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wider bg-zinc-800 text-zinc-400 border border-zinc-700/60",
+                            class: "text-[10px] font-mono px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-zinc-800 text-zinc-400 border border-zinc-700/60",
                             "Conexión Kyō Web"
                         }
                     }
@@ -454,19 +469,19 @@ pub fn Dashboard() -> Element {
 
                 // Indicador de Estado y Botón de Comprobación Rápida
                 div {
-                    class: "flex items-center gap-2.5",
+                    class: "flex items-center gap-3",
                     {
                         match *connection_status.read() {
                             ConnectionStatus::Connected { latency_ms, .. } => rsx! {
                                 span {
-                                    class: "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30",
-                                    span { class: "w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-sm shadow-emerald-500/50" }
+                                    class: "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30",
+                                    span { class: "w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-sm" }
                                     "Conectado ({latency_ms} ms)"
                                 }
                             },
                             ConnectionStatus::Connecting => rsx! {
                                 span {
-                                    class: "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 bg-indigo-500/10 text-indigo-300 border border-indigo-500/30",
+                                    class: "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-indigo-500/10 text-indigo-300 border border-indigo-500/30",
                                     span { class: "w-2 h-2 rounded-full bg-indigo-400 animate-ping" }
                                     "Comprobando..."
                                 }
@@ -474,9 +489,9 @@ pub fn Dashboard() -> Element {
                             ConnectionStatus::Error { is_auth_error, .. } => rsx! {
                                 span {
                                     class: if is_auth_error {
-                                        "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                                        "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-amber-500/10 text-amber-400 border border-amber-500/30"
                                     } else {
-                                        "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 bg-rose-500/10 text-rose-400 border border-rose-500/30"
+                                        "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-rose-500/10 text-rose-400 border border-rose-500/30"
                                     },
                                     span { class: "w-2 h-2 rounded-full bg-current" }
                                     if is_auth_error { "Token Inválido" } else { "Servidor Inaccesible" }
@@ -484,7 +499,7 @@ pub fn Dashboard() -> Element {
                             },
                             ConnectionStatus::Disconnected => rsx! {
                                 span {
-                                    class: "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 bg-zinc-800 text-zinc-400 border border-zinc-700/60",
+                                    class: "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-zinc-800 text-zinc-400 border border-zinc-700/60",
                                     span { class: "w-2 h-2 rounded-full bg-zinc-500" }
                                     "Desconectado"
                                 }
@@ -494,7 +509,7 @@ pub fn Dashboard() -> Element {
 
                     // Botón para refrescar / re-probar
                     button {
-                        class: "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-zinc-200 disabled:opacity-50",
+                        class: "flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-zinc-200 disabled:opacity-50",
                         disabled: is_loading,
                         onclick: move |_| handle_connect_and_save(),
                         svg {
@@ -507,347 +522,415 @@ pub fn Dashboard() -> Element {
                             stroke_linejoin: "round",
                             path { d: "M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" }
                         }
-                        span { if is_loading { "Verificando..." } else { "Comprobar ahora" } }
+                        span { if is_loading { "Verificando..." } else { "Comprobar estado" } }
                     }
                 }
             }
 
-            // ── Contenido Principal Scrollable ──────────────────────────────
+            // ── Contenido Principal Scrollable con Canvas Espacioso ─────────
             main {
-                class: "flex-1 overflow-y-auto px-6 py-8 space-y-6 max-w-5xl mx-auto w-full",
+                class: "flex-1 overflow-y-auto w-full",
 
-                // 1. BANNER PRINCIPAL DE ESTADO EN TIEMPO REAL
-                {
-                    match &*connection_status.read() {
-                        ConnectionStatus::Connected { latency_ms, server_url, last_checked, account } => {
-                            let spaces_txt = account.as_ref().and_then(|a| a.spaces_count).map(|c| format!("{c} espacios")).unwrap_or_else(|| "--".to_string());
-                            let vaults_txt = account.as_ref().and_then(|a| a.vaults_count).map(|c| format!("{c} bóvedas")).unwrap_or_else(|| "--".to_string());
+                div {
+                    class: "dashboard-canvas flex flex-col gap-7",
 
-                            rsx! {
-                                div {
-                                    class: "p-6 rounded-2xl border transition-all duration-300 relative overflow-hidden bg-gradient-to-r from-emerald-950/20 via-zinc-900 to-zinc-900/90 border-emerald-500/30 shadow-lg shadow-emerald-500/5",
+                    // 1. HERO TELEMÉTRICO DE ESTADO EN TIEMPO REAL
+                    {
+                        match &*connection_status.read() {
+                            ConnectionStatus::Connected { latency_ms, server_url, last_checked, account } => {
+                                let spaces_txt = account.as_ref().and_then(|a| a.spaces_count).map(|c| format!("{c} espacios")).unwrap_or_else(|| "--".to_string());
+                                let vaults_txt = account.as_ref().and_then(|a| a.vaults_count).map(|c| format!("{c} bóvedas")).unwrap_or_else(|| "--".to_string());
+                                let latency_color = if *latency_ms < 150 { "text-emerald-400" } else if *latency_ms < 400 { "text-amber-400" } else { "text-rose-400" };
+
+                                rsx! {
                                     div {
-                                        class: "flex flex-col md:flex-row md:items-center justify-between gap-5 relative z-10",
+                                        class: "dashboard-hero dashboard-hero-connected p-6 rounded-2xl border transition-all relative overflow-hidden shadow-md",
+                                        div {
+                                            class: "flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10",
+                                            div {
+                                                class: "flex items-start gap-4",
+                                                div {
+                                                    class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex-none shadow-sm",
+                                                    svg {
+                                                        class: "w-6 h-6",
+                                                        view_box: "0 0 24 24",
+                                                        fill: "none",
+                                                        stroke: "currentColor",
+                                                        stroke_width: "2.5",
+                                                        path { d: "M20 6L9 17l-5-5" }
+                                                    }
+                                                }
+                                                div {
+                                                    class: "space-y-1",
+                                                    div {
+                                                        class: "flex items-center gap-2.5 flex-wrap",
+                                                        h2 {
+                                                            class: "text-base font-bold tracking-tight text-zinc-100",
+                                                            style: "color: var(--kyo-fg-primary);",
+                                                            "Conexión activa con el Backend de Kyō"
+                                                        }
+                                                        span { class: "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40", "ONLINE 200 OK" }
+                                                    }
+                                                    p {
+                                                        class: "text-xs text-zinc-400 leading-relaxed",
+                                                        "Tu cliente está autenticado y sincronizado con el backend oficial de Kyō ({server_url})."
+                                                    }
+                                                }
+                                            }
+
+                                            // Métricas telemétricas en tiempo real
+                                            div {
+                                                class: "flex items-center gap-3 pt-3 md:pt-0 border-t md:border-t-0 border-zinc-800 flex-wrap sm:flex-nowrap",
+                                                div {
+                                                    class: "px-4 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[96px] flex-1 sm:flex-none shadow-sm",
+                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Latencia RTT" }
+                                                    div { class: "text-sm font-bold font-mono {latency_color} mt-0.5", "{latency_ms} ms" }
+                                                }
+                                                div {
+                                                    class: "px-4 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[96px] flex-1 sm:flex-none shadow-sm",
+                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Espacios" }
+                                                    div { class: "text-xs font-semibold text-zinc-200 mt-1", "{spaces_txt}" }
+                                                }
+                                                div {
+                                                    class: "px-4 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[96px] flex-1 sm:flex-none shadow-sm",
+                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Bóvedas" }
+                                                    div { class: "text-xs font-semibold text-zinc-200 mt-1 truncate max-w-[100px]", "{vaults_txt}" }
+                                                }
+                                            }
+                                        }
+                                        div {
+                                            class: "mt-4 pt-3.5 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 font-mono",
+                                            span { class: "flex items-center gap-1.5",
+                                                svg { class: "w-3 h-3 text-emerald-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", circle { cx: "12", cy: "12", r: "10" } polyline { points: "12 6 12 12 16 14" } }
+                                                "Última comprobación: {last_checked}"
+                                            }
+                                            span { class: "flex items-center gap-1.5",
+                                                svg { class: "w-3 h-3 text-indigo-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", rect { x: "3", y: "11", width: "18", height: "11", rx: "2" } path { d: "M7 11V7a5 5 0 0 1 10 0v4" } }
+                                                "Protocolo: HTTPS / REST API v1"
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            ConnectionStatus::Connecting => rsx! {
+                                div {
+                                    class: "dashboard-hero dashboard-hero-connecting p-6 rounded-2xl border transition-all flex items-center gap-4 shadow-sm",
+                                    div {
+                                        class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex-none",
+                                        svg {
+                                            class: "w-6 h-6 animate-spin",
+                                            view_box: "0 0 24 24",
+                                            fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "2",
+                                            path { d: "M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" }
+                                        }
+                                    }
+                                    div {
+                                        class: "space-y-1",
+                                        h2 {
+                                            class: "text-base font-bold text-zinc-100",
+                                            style: "color: var(--kyo-fg-primary);",
+                                            "Comprobando conexión con el backend de Kyō..."
+                                        }
+                                        p { class: "text-xs text-zinc-400 leading-relaxed", "Verificando el Token Key y midiendo la latencia de respuesta de los servicios." }
+                                    }
+                                }
+                            },
+                            ConnectionStatus::Error { message, is_auth_error, status_code, server_url } => rsx! {
+                                div {
+                                    class: if *is_auth_error {
+                                        "dashboard-hero dashboard-hero-warning p-6 rounded-2xl border space-y-3 shadow-sm"
+                                    } else {
+                                        "dashboard-hero dashboard-hero-error p-6 rounded-2xl border space-y-3 shadow-sm"
+                                    },
+                                    div {
+                                        class: "flex items-start gap-4",
+                                        div {
+                                            class: if *is_auth_error {
+                                                "w-12 h-12 rounded-2xl flex items-center justify-center bg-amber-500/10 text-amber-400 border border-amber-500/30 flex-none"
+                                            } else {
+                                                "w-12 h-12 rounded-2xl flex items-center justify-center bg-rose-500/10 text-rose-400 border border-rose-500/30 flex-none"
+                                            },
+                                            svg {
+                                                class: "w-6 h-6",
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: "2",
+                                                circle { cx: "12", cy: "12", r: "10" }
+                                                line { x1: "12", y1: "8", x2: "12", y2: "12" }
+                                                line { x1: "12", y1: "16", x2: "12.01", y2: "16" }
+                                            }
+                                        }
+                                        div {
+                                            class: "space-y-1.5 flex-1",
+                                            div {
+                                                class: "flex items-center gap-2.5 flex-wrap",
+                                                h2 {
+                                                    class: "text-base font-bold text-zinc-100",
+                                                    style: "color: var(--kyo-fg-primary);",
+                                                    if *is_auth_error { "Error de Autenticación con Kyō" } else { "Error de Conectividad con el Backend" }
+                                                }
+                                                if let Some(code) = status_code {
+                                                    span { class: "px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 text-zinc-300 border border-zinc-700", "HTTP {code}" }
+                                                }
+                                            }
+                                            p { class: "text-xs text-zinc-300 leading-relaxed", "{message}" }
+                                            p {
+                                                class: "text-[11px] text-zinc-400 font-mono mt-1",
+                                                "Servidor consultado: {server_url}. Asegúrate de ingresar un Token Key válido generado desde la web de Kyō."
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            ConnectionStatus::Disconnected => rsx! {
+                                div {
+                                    class: "dashboard-hero dashboard-hero-disconnected p-6 rounded-2xl border relative overflow-hidden shadow-sm",
+                                    div {
+                                        class: "flex flex-col sm:flex-row sm:items-center justify-between gap-5",
                                         div {
                                             class: "flex items-start gap-4",
                                             div {
-                                                class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex-none",
+                                                class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-zinc-800 text-zinc-400 border border-zinc-700/80 flex-none",
                                                 svg {
                                                     class: "w-6 h-6",
                                                     view_box: "0 0 24 24",
                                                     fill: "none",
                                                     stroke: "currentColor",
                                                     stroke_width: "2",
-                                                    path { d: "M20 6L9 17l-5-5" }
+                                                    path { d: "M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" }
                                                 }
                                             }
                                             div {
                                                 class: "space-y-1",
                                                 div {
                                                     class: "flex items-center gap-2",
-                                                    h2 { class: "text-lg font-bold tracking-tight text-white", "Conexión activa con el Backend de Kyō" }
-                                                    span { class: "px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40", "ONLINE 200 OK" }
+                                                    h2 {
+                                                        class: "text-base font-bold text-zinc-100",
+                                                        style: "color: var(--kyo-fg-primary);",
+                                                        "Desconectado de Kyō Web"
+                                                    }
+                                                    span { class: "px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 text-zinc-400 border border-zinc-700", "OFFLINE" }
                                                 }
-                                                p {
-                                                    class: "text-xs text-zinc-400 leading-relaxed",
-                                                    "Tu software está autenticado y sincronizado con el backend oficial de Kyō ({server_url})."
-                                                }
+                                                p { class: "text-xs text-zinc-400 leading-relaxed", "Introduce tu Token Key a continuación para conectar tu software de escritorio con tu cuenta y habilitar la sincronización en vivo." }
                                             }
                                         }
-
-                                        // Métricas rápidas
-                                        div {
-                                            class: "flex items-center gap-3 pt-2 md:pt-0 border-t md:border-t-0 border-zinc-800",
-                                            div {
-                                                class: "px-3.5 py-2 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[90px]",
-                                                div { class: "text-[10px] font-mono uppercase text-zinc-400", "Latencia RTT" }
-                                                div { class: "text-sm font-bold font-mono text-emerald-400", "{latency_ms} ms" }
-                                            }
-                                            div {
-                                                class: "px-3.5 py-2 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[90px]",
-                                                div { class: "text-[10px] font-mono uppercase text-zinc-400", "Espacios" }
-                                                div { class: "text-xs font-semibold text-zinc-200 mt-0.5", "{spaces_txt}" }
-                                            }
-                                            div {
-                                                class: "px-3.5 py-2 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[90px]",
-                                                div { class: "text-[10px] font-mono uppercase text-zinc-400", "Bóvedas" }
-                                                div { class: "text-xs font-semibold text-zinc-200 mt-0.5 truncate max-w-[100px]", "{vaults_txt}" }
-                                            }
-                                        }
-                                    }
-                                    div {
-                                        class: "mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-[11px] text-zinc-400 font-mono",
-                                        span { "Última sincronización comprobada: {last_checked}" }
-                                        span { "Protocolo: HTTPS / REST API v1" }
-                                    }
-                                }
-                            }
-                        },
-                        ConnectionStatus::Connecting => rsx! {
-                            div {
-                                class: "p-6 rounded-2xl border transition-all duration-300 bg-indigo-950/20 border-indigo-500/30 flex items-center gap-4",
-                                div {
-                                    class: "w-10 h-10 rounded-xl flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex-none",
-                                    svg {
-                                        class: "w-5 h-5 animate-spin",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" }
-                                    }
-                                }
-                                div {
-                                    h2 { class: "text-sm font-bold text-white", "Comprobando conexión con el backend de Kyō..." }
-                                    p { class: "text-xs text-zinc-400 mt-0.5", "Verificando el Token Key y midiendo la latencia de respuesta de los servicios." }
-                                }
-                            }
-                        },
-                        ConnectionStatus::Error { message, is_auth_error, status_code, server_url } => rsx! {
-                            div {
-                                class: if *is_auth_error {
-                                    "p-6 rounded-2xl border bg-amber-950/20 border-amber-500/30 space-y-3"
-                                } else {
-                                    "p-6 rounded-2xl border bg-rose-950/20 border-rose-500/30 space-y-3"
-                                },
-                                div {
-                                    class: "flex items-start gap-4",
-                                    div {
-                                        class: if *is_auth_error {
-                                            "w-10 h-10 rounded-xl flex items-center justify-center bg-amber-500/10 text-amber-400 border border-amber-500/30 flex-none"
-                                        } else {
-                                            "w-10 h-10 rounded-xl flex items-center justify-center bg-rose-500/10 text-rose-400 border border-rose-500/30 flex-none"
-                                        },
-                                        svg {
-                                            class: "w-5 h-5",
-                                            view_box: "0 0 24 24",
-                                            fill: "none",
-                                            stroke: "currentColor",
-                                            stroke_width: "2",
-                                            circle { cx: "12", cy: "12", r: "10" }
-                                            line { x1: "12", y1: "8", x2: "12", y2: "12" }
-                                            line { x1: "12", y1: "16", x2: "12.01", y2: "16" }
-                                        }
-                                    }
-                                    div {
-                                        class: "space-y-1",
-                                        div {
-                                            class: "flex items-center gap-2",
-                                            h2 {
-                                                class: "text-sm font-bold text-white",
-                                                if *is_auth_error { "Error de Autenticación con Kyō" } else { "Error de Conectividad con el Backend" }
-                                            }
-                                            if let Some(code) = status_code {
-                                                span { class: "px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 text-zinc-300", "HTTP {code}" }
-                                            }
-                                        }
-                                        p { class: "text-xs text-zinc-300 leading-relaxed", "{message}" }
-                                        p {
-                                            class: "text-[11px] text-zinc-400 mt-1",
-                                            "Servidor consultado: {server_url}. Asegúrate de ingresar un Token Key válido generado desde la web de Kyō."
+                                        button {
+                                            class: "flex-none px-4 py-2.5 rounded-xl text-xs font-semibold text-indigo-400 hover:text-indigo-300 bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-500/30 flex items-center gap-2 transition-all cursor-pointer",
+                                            onclick: move |_| open_in_browser("https://kyo.broco.dev"),
+                                            span { "Obtener Token en la Web" }
+                                            svg { class: "w-3.5 h-3.5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", path { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" } }
                                         }
                                     }
                                 }
-                            }
-                        },
-                        ConnectionStatus::Disconnected => rsx! {
-                            div {
-                                class: "p-6 rounded-2xl border bg-zinc-900/60 border-zinc-800 space-y-2",
-                                div {
-                                    class: "flex items-start gap-4",
-                                    div {
-                                        class: "w-10 h-10 rounded-xl flex items-center justify-center bg-zinc-800 text-zinc-400 border border-zinc-700 flex-none",
-                                        svg {
-                                            class: "w-5 h-5",
-                                            view_box: "0 0 24 24",
-                                            fill: "none",
-                                            stroke: "currentColor",
-                                            stroke_width: "2",
-                                            path { d: "M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" }
-                                        }
-                                    }
-                                    div {
-                                        h2 { class: "text-sm font-bold text-white", "Desconectado de Kyō Web" }
-                                        p { class: "text-xs text-zinc-400 leading-relaxed mt-0.5", "Introduce tu Token Key a continuación para autenticar este software con tu cuenta y habilitar la sincronización en vivo." }
-                                    }
-                                }
-                            }
-                        },
+                            },
+                        }
                     }
-                }
 
-                // 2. GRID DE GESTIÓN DE TOKEN Y CUENTA
-                div {
-                    class: "grid grid-cols-1 lg:grid-cols-12 gap-6",
-
-                    // COLUMNA IZQUIERDA: Flujo de conexión vía Token Key (7 columnas)
+                    // 2. GRID PRINCIPAL DE GESTIÓN Y TELEMETRÍA (2 Columnas Equilibradas)
                     div {
-                        class: "lg:col-span-7 space-y-6",
+                        class: "grid grid-cols-1 lg:grid-cols-2 gap-7 items-stretch",
 
-                        // Tarjeta: Autenticación por Token Key
+                        // Columna Izquierda: Tarjeta 1 - Autenticación por Token Key
                         div {
-                            class: "p-6 rounded-2xl border space-y-5",
-                            style: "background-color: var(--kyo-surface-1); border-color: var(--kyo-border-default);",
+                            class: "dashboard-card p-6 flex flex-col justify-between gap-5",
 
                             div {
-                                class: "space-y-1 pb-3 border-b border-zinc-800",
-                                h3 { class: "text-sm font-bold text-white flex items-center gap-2",
-                                    svg {
-                                        class: "w-4 h-4 text-indigo-400",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" }
-                                    }
-                                    "Clave de Acceso (Token Key)"
-                                }
-                                p { class: "text-xs text-zinc-400 leading-relaxed",
-                                    "Ingresa el token generado en tu cuenta web de Kyō para conectar este cliente de escritorio con el backend."
-                                }
-                            }
+                                class: "space-y-5",
 
-                            // Campo de entrada del Token con Toggle Mostrar/Ocultar
-                            div {
-                                class: "space-y-2",
-                                label {
-                                    class: "block text-xs font-semibold text-zinc-300",
-                                    "Token Key (Bearer / JWT):"
-                                }
+                                // Header de la Tarjeta
                                 div {
-                                    class: "relative flex items-center",
-                                    input {
-                                        r#type: if *is_token_visible.read() { "text" } else { "password" },
-                                        class: "w-full pl-3 pr-24 py-2.5 rounded-xl font-mono text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition-all",
-                                        style: "background-color: var(--kyo-surface-0); border: 1px solid var(--kyo-border-hover); color: var(--kyo-fg-primary);",
-                                        placeholder: "Pega tu Token Key aquí (eyJhbGciOiJIUzI1Ni...)",
-                                        value: "{token_input}",
-                                        oninput: move |evt| {
-                                            token_input.set(evt.value());
-                                            last_error_msg.set(None);
-                                        },
-                                        onkeydown: move |evt: KeyboardEvent| {
-                                            if evt.key() == Key::Enter {
-                                                handle_connect_and_save();
+                                    class: "space-y-1 pb-4 border-b border-zinc-800",
+                                    h3 {
+                                        class: "text-sm font-bold text-zinc-100 flex items-center gap-2.5",
+                                        style: "color: var(--kyo-fg-primary);",
+                                        div {
+                                            class: "w-7 h-7 rounded-lg flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex-none",
+                                            svg {
+                                                class: "w-4 h-4",
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: "2",
+                                                path { d: "M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" }
                                             }
                                         }
+                                        "Clave de Acceso (Token Key)"
                                     }
+                                    p { class: "text-xs text-zinc-400 leading-relaxed pl-9.5",
+                                        "Ingresa el token generado en tu cuenta web de Kyō para conectar este cliente de escritorio con el backend."
+                                    }
+                                }
 
-                                    // Botones dentro del input (Ojo y Limpiar)
+                                // Campo de entrada del Token con Icono de Candado, Toggle Mostrar/Ocultar y Botón Limpiar
+                                div {
+                                    class: "space-y-2",
+                                    label {
+                                        class: "block text-xs font-semibold text-zinc-300",
+                                        "Token Key (Bearer / JWT):"
+                                    }
                                     div {
-                                        class: "absolute right-2 flex items-center gap-1",
-                                        if !token_input.read().is_empty() {
+                                        class: "relative flex items-center w-full",
+
+                                        // Icono de candado a la izquierda para alejar el texto del borde y centrarlo visualmente
+                                        div {
+                                            class: "absolute left-4 flex items-center pointer-events-none text-zinc-400",
+                                            svg {
+                                                class: "w-4 h-4",
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: "2",
+                                                rect { x: "3", y: "11", width: "18", height: "11", rx: "2", ry: "2" }
+                                                path { d: "M7 11V7a5 5 0 0 1 10 0v4" }
+                                            }
+                                        }
+
+                                        input {
+                                            r#type: if *is_token_visible.read() { "text" } else { "password" },
+                                            class: "w-full py-3.5 rounded-xl font-mono text-xs focus:outline-none transition-all shadow-sm",
+                                            style: "background-color: var(--kyo-surface-0); border: 1px solid var(--kyo-border-default); color: var(--kyo-fg-primary); padding-left: 44px; padding-right: 84px;",
+                                            placeholder: "Pega tu Token Key aquí (eyJhbGciOiJIUzI1Ni...)",
+                                            value: "{token_input}",
+                                            oninput: move |evt| {
+                                                token_input.set(evt.value());
+                                                last_error_msg.set(None);
+                                            },
+                                            onkeydown: move |evt: KeyboardEvent| {
+                                                if evt.key() == Key::Enter {
+                                                    handle_connect_and_save();
+                                                }
+                                            }
+                                        }
+
+                                        // Botones internos (Limpiar y Ojo Mostrar/Ocultar)
+                                        div {
+                                            class: "absolute right-3.5 flex items-center gap-1.5",
+                                            if !token_input.read().is_empty() {
+                                                button {
+                                                    class: "p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
+                                                    title: "Limpiar campo",
+                                                    onclick: move |_| token_input.set(String::new()),
+                                                    svg {
+                                                        class: "w-4 h-4",
+                                                        view_box: "0 0 24 24",
+                                                        fill: "none",
+                                                        stroke: "currentColor",
+                                                        stroke_width: "2",
+                                                        path { d: "M18 6L6 18M6 6l12 12" }
+                                                    }
+                                                }
+                                            }
                                             button {
                                                 class: "p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
-                                                title: "Limpiar campo",
-                                                onclick: move |_| token_input.set(String::new()),
-                                                svg {
-                                                    class: "w-3.5 h-3.5",
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    path { d: "M18 6L6 18M6 6l12 12" }
-                                                }
-                                            }
-                                        }
-                                        button {
-                                            class: "p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
-                                            title: if *is_token_visible.read() { "Ocultar token" } else { "Mostrar token" },
-                                            onclick: move |_| {
-                                                let cur = *is_token_visible.read();
-                                                is_token_visible.set(!cur);
-                                            },
-                                            if *is_token_visible.read() {
-                                                svg {
-                                                    class: "w-3.5 h-3.5",
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    path { d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" }
-                                                    line { x1: "1", y1: "1", x2: "23", y2: "23" }
-                                                }
-                                            } else {
-                                                svg {
-                                                    class: "w-3.5 h-3.5",
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    path { d: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" }
-                                                    circle { cx: "12", cy: "12", r: "3" }
+                                                title: if *is_token_visible.read() { "Ocultar token" } else { "Mostrar token" },
+                                                onclick: move |_| {
+                                                    let cur = *is_token_visible.read();
+                                                    is_token_visible.set(!cur);
+                                                },
+                                                if *is_token_visible.read() {
+                                                    svg {
+                                                        class: "w-4 h-4",
+                                                        view_box: "0 0 24 24",
+                                                        fill: "none",
+                                                        stroke: "currentColor",
+                                                        stroke_width: "2",
+                                                        path { d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" }
+                                                        line { x1: "1", y1: "1", x2: "23", y2: "23" }
+                                                    }
+                                                } else {
+                                                    svg {
+                                                        class: "w-4 h-4",
+                                                        view_box: "0 0 24 24",
+                                                        fill: "none",
+                                                        stroke: "currentColor",
+                                                        stroke_width: "2",
+                                                        path { d: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" }
+                                                        circle { cx: "12", cy: "12", r: "3" }
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            // Botones de Acción del Flujo de Conexión
-                            div {
-                                class: "flex flex-wrap items-center justify-between gap-3 pt-2",
+                                // Botones de Acción (Espaciosos, Modernos y Cómodos)
                                 div {
-                                    class: "flex items-center gap-2",
+                                    class: "flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pt-3 border-t border-zinc-800/60",
+                                    div {
+                                        class: "flex items-center gap-3 flex-wrap",
+                                        button {
+                                            class: "px-6 py-3 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white shadow-md shadow-indigo-600/30 flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-50",
+                                            disabled: is_loading,
+                                            onclick: move |_| handle_connect_and_save(),
+                                            svg {
+                                                class: if is_loading { "w-4 h-4 animate-spin" } else { "w-4 h-4" },
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: "2.5",
+                                                stroke_linecap: "round",
+                                                stroke_linejoin: "round",
+                                                path { d: "M20 6L9 17l-5-5" }
+                                            }
+                                            span { if is_loading { "Verificando..." } else { "Conectar y Guardar" } }
+                                        }
+
+                                        if is_connected || !token_input.read().trim().is_empty() {
+                                            button {
+                                                class: "px-5 py-3 rounded-xl text-xs sm:text-sm font-medium text-rose-400 hover:text-white hover:bg-rose-600 border border-rose-500/30 flex items-center justify-center gap-2 transition-all cursor-pointer",
+                                                onclick: move |_| handle_disconnect(),
+                                                svg {
+                                                    class: "w-4 h-4",
+                                                    view_box: "0 0 24 24",
+                                                    fill: "none",
+                                                    stroke: "currentColor",
+                                                    stroke_width: "2",
+                                                    path { d: "M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10" }
+                                                }
+                                                span { "Desconectar" }
+                                            }
+                                        }
+                                    }
+
+                                    // Botón para abrir la web de Kyō
                                     button {
-                                        class: "px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm shadow-indigo-600/30 flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50",
-                                        disabled: is_loading,
-                                        onclick: move |_| handle_connect_and_save(),
+                                        class: "px-4 py-2.5 rounded-xl text-xs font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/25 flex items-center justify-center gap-2 transition-all cursor-pointer self-start sm:self-auto",
+                                        onclick: move |_| open_in_browser("https://kyo.broco.dev"),
+                                        span { "Obtener Token en la Web" }
                                         svg {
-                                            class: if is_loading { "w-3.5 h-3.5 animate-spin" } else { "w-3.5 h-3.5" },
+                                            class: "w-3.5 h-3.5",
                                             view_box: "0 0 24 24",
                                             fill: "none",
                                             stroke: "currentColor",
                                             stroke_width: "2",
-                                            path { d: "M5 13l4 4L19 7" }
-                                        }
-                                        span { if is_loading { "Verificando..." } else { "Conectar y Guardar" } }
-                                    }
-
-                                    if is_connected || !token_input.read().trim().is_empty() {
-                                        button {
-                                            class: "px-3 py-2 rounded-xl text-xs font-medium text-rose-400 hover:text-white hover:bg-rose-600/20 border border-rose-500/20 transition-all cursor-pointer",
-                                            onclick: move |_| handle_disconnect(),
-                                            "Desconectar"
+                                            path { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" }
                                         }
                                     }
                                 }
 
-                                // Botón para abrir la web y conseguir token
-                                button {
-                                    class: "text-xs font-medium text-indigo-400 hover:text-indigo-300 flex items-center gap-1.5 transition-colors cursor-pointer",
-                                    onclick: move |_| open_in_browser("https://kyo.broco.dev"),
-                                    span { "Obtener Token en la Web" }
-                                    svg {
-                                        class: "w-3.5 h-3.5",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" }
+                                // Mensaje de éxito
+                                if *save_feedback_visible.read() {
+                                    div {
+                                        class: "p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2.5 animate-fade-in",
+                                        svg {
+                                            class: "w-4 h-4 flex-none",
+                                            view_box: "0 0 24 24",
+                                            fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "2",
+                                            path { d: "M20 6L9 17l-5-5" }
+                                        }
+                                        span { "✓ Credenciales verificadas y guardadas correctamente en session.json." }
                                     }
                                 }
                             }
 
-                            // Mensaje de éxito o retroalimentación
-                            if *save_feedback_visible.read() {
-                                div {
-                                    class: "p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2 animate-fade-in",
-                                    svg {
-                                        class: "w-4 h-4 flex-none",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M20 6L9 17l-5-5" }
-                                    }
-                                    span { "✓ Credenciales verificadas y guardadas correctamente en session.json." }
-                                }
-                            }
-
-                            // Configuración avanzada de la URL del Servidor (Colapsable)
+                            // Configuración avanzada del servidor backend (Acordeón)
                             div {
-                                class: "pt-2 border-t border-zinc-800/80 space-y-3",
+                                class: "pt-3 border-t border-zinc-800/80 space-y-3",
                                 button {
                                     class: "flex items-center gap-2 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
                                     onclick: move |_| {
@@ -886,240 +969,149 @@ pub fn Dashboard() -> Element {
                                                 }
                                             }
                                         }
-                                        p { class: "text-[11px] text-zinc-400", "El valor predeterminado es https://kyo.broco.dev. Solo cámbialo si estás ejecutando una instancia local o un entorno de desarrollo dedicado." }
+                                        p { class: "text-[11px] text-zinc-400 leading-relaxed", "El valor predeterminado es https://kyo.broco.dev. Solo cámbialo si estás ejecutando una instancia local o un entorno de desarrollo dedicado." }
                                     }
                                 }
                             }
                         }
 
-                        // Tarjeta: Inspector de Token JWT en vivo
+                        // Columna Derecha: Tarjeta 2 - Cuenta de Usuario en Kyō
                         div {
-                            class: "p-6 rounded-2xl border space-y-4",
-                            style: "background-color: var(--kyo-surface-1); border-color: var(--kyo-border-default);",
+                            class: "dashboard-card p-6 flex flex-col justify-between gap-4",
 
                             div {
-                                class: "flex items-center justify-between pb-3 border-b border-zinc-800",
-                                h3 { class: "text-sm font-bold text-white flex items-center gap-2",
-                                    svg {
-                                        class: "w-4 h-4 text-emerald-400",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        rect { x: "2", y: "4", width: "20", height: "16", rx: "2" }
-                                        path { d: "M6 8h4M6 12h8M6 16h6" }
-                                    }
-                                    "Inspector de Token en Vivo"
-                                }
-                                if let Some(ref j) = *jwt_info.read() {
-                                    span {
-                                        class: if j.is_expired {
-                                            "px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/30"
-                                        } else {
-                                            "px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                                        },
-                                        if j.is_expired { "EXPIRADO" } else { "VÁLIDO" }
-                                    }
-                                }
-                            }
+                                class: "space-y-4",
 
-                            if let Some(ref j) = *jwt_info.read() {
                                 div {
-                                    class: "space-y-3",
-                                    {
-                                        let alg_val = j.alg.as_deref().unwrap_or("HS256");
-                                        let role_val = j.role.as_deref().unwrap_or("user");
-                                        let fmt_val = if j.is_jwt { "JWT (RFC 7519)" } else { "Opaco / Bearer" };
+                                    class: "flex items-center gap-3 pb-3.5 border-b border-zinc-800",
+                                    div {
+                                        class: "w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold text-sm shadow-sm",
+                                        svg {
+                                            class: "w-5 h-5",
+                                            view_box: "0 0 24 24",
+                                            fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "2",
+                                            path { d: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" }
+                                            circle { cx: "12", cy: "7", r: "4" }
+                                        }
+                                    }
+                                    div {
+                                        h3 {
+                                            class: "text-sm font-bold text-zinc-100",
+                                            style: "color: var(--kyo-fg-primary);",
+                                            "Cuenta en Kyō"
+                                        }
+                                        p { class: "text-xs text-zinc-400", "Identidad y recursos vinculados al token" }
+                                    }
+                                }
+
+                                // Datos de la cuenta
+                                {
+                                    if let ConnectionStatus::Connected { account: Some(acc), .. } = &*connection_status.read() {
+                                        let name_str = acc.username.clone().unwrap_or_else(|| "Usuario Autenticado".to_string());
+                                        let uid_str = acc.user_id.map(|id| format!("#{id}")).unwrap_or_else(|| "--".to_string());
+                                        let role_str = acc.role.clone().unwrap_or_else(|| "user".to_string());
+                                        let sp_count = acc.spaces_count.unwrap_or(0);
+                                        let vl_count = acc.vaults_count.unwrap_or(0);
+                                        let primary_v = acc.primary_vault.clone().unwrap_or_else(|| "Mi bóveda".to_string());
+
                                         rsx! {
                                             div {
-                                                class: "grid grid-cols-2 md:grid-cols-3 gap-2.5",
-                                                div {
-                                                    class: "p-3 rounded-xl bg-zinc-900/80 border border-zinc-800",
-                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400", "Formato" }
-                                                    div { class: "text-xs font-semibold text-zinc-200 mt-0.5", "{fmt_val}" }
-                                                }
-                                                div {
-                                                    class: "p-3 rounded-xl bg-zinc-900/80 border border-zinc-800",
-                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400", "Algoritmo" }
-                                                    div { class: "text-xs font-semibold font-mono text-indigo-400 mt-0.5", "{alg_val}" }
-                                                }
-                                                div {
-                                                    class: "p-3 rounded-xl bg-zinc-900/80 border border-zinc-800",
-                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400", "Rol Declarado" }
-                                                    div { class: "text-xs font-semibold text-zinc-200 mt-0.5 capitalize", "{role_val}" }
-                                                }
-                                            }
-                                        }
-                                    }
+                                                class: "space-y-4",
 
-                                    // Vigencia / Expiración
-                                    if let Some(ref exp_str) = j.expiration_str {
-                                        div {
-                                            class: "p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between text-xs",
-                                            span { class: "text-zinc-400", "Vigencia del Token:" }
-                                            span {
-                                                class: if j.is_expired { "font-mono font-semibold text-rose-400" } else { "font-mono font-semibold text-emerald-400" },
-                                                "{exp_str}"
-                                            }
-                                        }
-                                    }
+                                                // Tarjeta resumen del usuario
+                                                div {
+                                                    class: "p-4 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between",
+                                                    div {
+                                                        class: "space-y-0.5",
+                                                        div {
+                                                            class: "text-sm font-bold text-zinc-100",
+                                                            style: "color: var(--kyo-fg-primary);",
+                                                            "{name_str}"
+                                                        }
+                                                        div { class: "text-[11px] font-mono text-zinc-400", "ID: {uid_str}" }
+                                                    }
+                                                    span {
+                                                        class: "px-2.5 py-0.5 rounded-full text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30",
+                                                        "{role_str}"
+                                                    }
+                                                }
 
-                                    // Advertencia si existe
-                                    if let Some(ref w) = j.warning {
-                                        div {
-                                            class: "p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2",
-                                            svg {
-                                                class: "w-4 h-4 flex-none",
-                                                view_box: "0 0 24 24",
-                                                fill: "none",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
-                                                path { d: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4m0 4h.01" }
+                                                // Mini-grid de recursos vinculados
+                                                div {
+                                                    class: "grid grid-cols-2 gap-3",
+                                                    div {
+                                                        class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center",
+                                                        div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Espacios" }
+                                                        div {
+                                                            class: "text-sm font-bold text-zinc-100 mt-1",
+                                                            style: "color: var(--kyo-fg-primary);",
+                                                            "{sp_count}"
+                                                        }
+                                                        div { class: "text-[10px] text-zinc-400 mt-0.5", "en la nube" }
+                                                    }
+                                                    div {
+                                                        class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center",
+                                                        div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Bóvedas" }
+                                                        div {
+                                                            class: "text-sm font-bold text-zinc-100 mt-1",
+                                                            style: "color: var(--kyo-fg-primary);",
+                                                            "{vl_count}"
+                                                        }
+                                                        div { class: "text-[10px] text-zinc-400 mt-0.5", "en servidor" }
+                                                    }
+                                                }
+
+                                                // Filas de detalle
+                                                div {
+                                                    class: "space-y-2 text-xs",
+                                                    div {
+                                                        class: "flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800",
+                                                        span { class: "text-zinc-400", "Bóveda Principal:" }
+                                                        span { class: "font-semibold text-emerald-400", "{primary_v}" }
+                                                    }
+                                                    div {
+                                                        class: "flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800",
+                                                        span { class: "text-zinc-400", "Sincronización:" }
+                                                        span { class: "flex items-center gap-1.5 text-zinc-300",
+                                                            span { class: "w-2 h-2 rounded-full bg-emerald-400 animate-pulse" }
+                                                            "En tiempo real"
+                                                        }
+                                                    }
+                                                }
                                             }
-                                            span { "{w}" }
+                                        }
+                                    } else {
+                                        rsx! {
+                                            div {
+                                                class: "p-5 rounded-xl bg-zinc-900/40 border border-zinc-800/80 text-center space-y-2 text-xs text-zinc-400 my-auto",
+                                                div {
+                                                    class: "w-10 h-10 rounded-full bg-zinc-800/80 text-zinc-400 mx-auto flex items-center justify-center",
+                                                    svg { class: "w-5 h-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "1.5", path { d: "M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" } circle { cx: "8.5", cy: "7", r: "4" } line { x1: "20", y1: "8", x2: "20", y2: "14" } line { x1: "23", y1: "11", x2: "17", y2: "11" } }
+                                                }
+                                                p { class: "font-medium text-zinc-300", "Sin cuenta vinculada" }
+                                                p { class: "text-[11px] text-zinc-400 leading-relaxed", "Ingresa tu Token Key para ver los detalles de tu usuario y sincronizar tus espacios." }
+                                            }
                                         }
                                     }
-                                }
-                            } else {
-                                div {
-                                    class: "p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 text-center text-xs text-zinc-400",
-                                    "Pega tu Token Key en el campo superior para inspeccionar sus claims y tiempo de vigencia en tiempo real."
                                 }
                             }
                         }
                     }
 
-                    // COLUMNA DERECHA: Estado de la Cuenta & Diagnóstico (5 columnas)
+                    // 3. BARRA HORIZONTAL: Diagnóstico del Entorno & Acceso al Chat (Full width)
                     div {
-                        class: "lg:col-span-5 space-y-6",
+                        class: "dashboard-card p-6 flex flex-col gap-5",
 
-                        // Tarjeta: Cuenta de Usuario Autenticada
                         div {
-                            class: "p-6 rounded-2xl border space-y-4",
-                            style: "background-color: var(--kyo-surface-1); border-color: var(--kyo-border-default);",
-
+                            class: "flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-800",
                             div {
-                                class: "flex items-center gap-3 pb-3 border-b border-zinc-800",
+                                class: "flex items-center gap-3",
                                 div {
-                                    class: "w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold text-sm shadow-md shadow-indigo-500/20",
+                                    class: "w-8 h-8 rounded-xl flex items-center justify-center bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex-none",
                                     svg {
-                                        class: "w-5 h-5",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" }
-                                        circle { cx: "12", cy: "7", r: "4" }
-                                    }
-                                }
-                                div {
-                                    h3 { class: "text-sm font-bold text-white", "Cuenta en Kyō" }
-                                    p { class: "text-xs text-zinc-400", "Identidad y recursos asociados al token" }
-                                }
-                            }
-
-                            // Datos de la cuenta
-                            {
-                                if let ConnectionStatus::Connected { account: Some(acc), .. } = &*connection_status.read() {
-                                    let name_str = acc.username.clone().unwrap_or_else(|| "Usuario Autenticado".to_string());
-                                    let uid_str = acc.user_id.map(|id| format!("#{id}")).unwrap_or_else(|| "--".to_string());
-                                    let role_str = acc.role.clone().unwrap_or_else(|| "user".to_string());
-                                    let sp_count = acc.spaces_count.unwrap_or(0);
-                                    let vl_count = acc.vaults_count.unwrap_or(0);
-                                    let primary_v = acc.primary_vault.clone().unwrap_or_else(|| "Mi bóveda".to_string());
-
-                                    rsx! {
-                                        div {
-                                            class: "space-y-3 text-xs",
-                                            div {
-                                                class: "flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                span { class: "text-zinc-400", "Usuario:" }
-                                                span { class: "font-semibold text-white", "{name_str}" }
-                                            }
-                                            div {
-                                                class: "flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                span { class: "text-zinc-400", "ID de Cuenta:" }
-                                                span { class: "font-mono text-zinc-300", "{uid_str}" }
-                                            }
-                                            div {
-                                                class: "flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                span { class: "text-zinc-400", "Rol:" }
-                                                span { class: "px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30", "{role_str}" }
-                                            }
-                                            div {
-                                                class: "flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                span { class: "text-zinc-400", "Bóveda Principal:" }
-                                                span { class: "font-medium text-emerald-400", "{primary_v}" }
-                                            }
-                                            div {
-                                                class: "flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                span { class: "text-zinc-400", "Espacios Vinculados:" }
-                                                span { class: "font-semibold text-white", "{sp_count} espacios en la nube" }
-                                            }
-                                            div {
-                                                class: "flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                span { class: "text-zinc-400", "Bóvedas en Servidor:" }
-                                                span { class: "font-semibold text-white", "{vl_count} bóvedas" }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    rsx! {
-                                        div {
-                                            class: "p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 text-center space-y-2 text-xs text-zinc-400",
-                                            p { "No hay ninguna cuenta autenticada en este momento." }
-                                            p { class: "text-[11px] text-zinc-400", "Conecta tu Token Key para ver los detalles de tu usuario y sincronizar tus espacios." }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Tarjeta: Diagnóstico de Red & Conectividad
-                        div {
-                            class: "p-6 rounded-2xl border space-y-3 text-xs",
-                            style: "background-color: var(--kyo-surface-1); border-color: var(--kyo-border-default);",
-
-                            h3 { class: "text-sm font-bold text-white flex items-center gap-2",
-                                svg {
-                                    class: "w-4 h-4 text-cyan-400",
-                                    view_box: "0 0 24 24",
-                                    fill: "none",
-                                    stroke: "currentColor",
-                                    stroke_width: "2",
-                                    path { d: "M5 12h14M12 5l7 7-7 7" }
-                                }
-                                "Diagnóstico del Entorno"
-                            }
-
-                            div {
-                                class: "space-y-2 text-zinc-300 font-mono text-[11px]",
-                                div {
-                                    class: "p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex items-center justify-between",
-                                    span { class: "text-zinc-400 font-sans", "Endpoint API:" }
-                                    span { class: "text-zinc-300 truncate max-w-[200px]", "{server_url_input}/api/v1" }
-                                }
-                                div {
-                                    class: "p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex items-center justify-between",
-                                    span { class: "text-zinc-400 font-sans", "Persistencia:" }
-                                    span { class: "text-emerald-400 font-sans", "%APPDATA%/kyo/session.json" }
-                                }
-                                div {
-                                    class: "p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex items-center justify-between",
-                                    span { class: "text-zinc-400 font-sans", "Seguridad:" }
-                                    span { class: "text-indigo-300 font-sans", "Bearer Token TLS Encrypted" }
-                                }
-                            }
-
-                            // Botón para ir al chat
-                            div {
-                                class: "pt-2",
-                                button {
-                                    class: "w-full py-2.5 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center justify-center gap-2 transition-all cursor-pointer",
-                                    onclick: move |_| active_view.set(ActiveView::Chat),
-                                    span { "Ir al Chat de Kyō" }
-                                    svg {
-                                        class: "w-3.5 h-3.5",
+                                        class: "w-4 h-4",
                                         view_box: "0 0 24 24",
                                         fill: "none",
                                         stroke: "currentColor",
@@ -1127,6 +1119,46 @@ pub fn Dashboard() -> Element {
                                         path { d: "M5 12h14M12 5l7 7-7 7" }
                                     }
                                 }
+                                div {
+                                    h3 {
+                                        class: "text-sm font-bold text-zinc-100",
+                                        style: "color: var(--kyo-fg-primary);",
+                                        "Diagnóstico del Entorno"
+                                    }
+                                    p { class: "text-xs text-zinc-400", "Parámetros de conexión local, almacenamiento persistente y seguridad de transporte" }
+                                }
+                            }
+                            button {
+                                class: "px-4.5 py-2.5 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center gap-2 transition-all cursor-pointer shadow-sm self-start sm:self-auto",
+                                onclick: move |_| active_view.set(ActiveView::Chat),
+                                span { "Ir al Chat de Kyō" }
+                                svg {
+                                    class: "w-3.5 h-3.5",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    stroke_width: "2",
+                                    path { d: "M5 12h14M12 5l7 7-7 7" }
+                                }
+                            }
+                        }
+
+                        div {
+                            class: "grid grid-cols-1 md:grid-cols-3 gap-3.5 font-mono text-[11px]",
+                            div {
+                                class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col gap-1.5",
+                                span { class: "text-[10px] uppercase font-sans text-zinc-400 tracking-wider", "Endpoint API" }
+                                span { class: "text-xs text-zinc-200 truncate font-mono", "{server_url_input}/api/v1" }
+                            }
+                            div {
+                                class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col gap-1.5",
+                                span { class: "text-[10px] uppercase font-sans text-zinc-400 tracking-wider", "Persistencia Local" }
+                                span { class: "text-xs text-emerald-400 font-medium font-sans", "%APPDATA%/kyo/session.json" }
+                            }
+                            div {
+                                class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col gap-1.5",
+                                span { class: "text-[10px] uppercase font-sans text-zinc-400 tracking-wider", "Seguridad de Transporte" }
+                                span { class: "text-xs text-indigo-300 font-sans", "Bearer Token TLS Encrypted" }
                             }
                         }
                     }
@@ -1135,3 +1167,4 @@ pub fn Dashboard() -> Element {
         }
     }
 }
+

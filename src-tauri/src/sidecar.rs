@@ -108,6 +108,26 @@ pub fn spawn(app: &AppHandle) {
                                 *state.port.lock().unwrap() = None;
                             }
                             let _ = app_handle.emit("sidecar://terminated", ());
+
+                            // Reinicio automático con backoff exponencial (max 3 intentos)
+                            if let Some(code) = payload.code {
+                                if code != 0 {
+                                    static RESTART_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                                    let count = RESTART_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if count < 3 {
+                                        let delay = std::time::Duration::from_secs(2u64.pow(count));
+                                        eprintln!("[Sidecar] Reintentando en {:?} (intento {}/3)...", delay, count + 1);
+                                        let app_clone = app_handle.clone();
+                                        std::thread::spawn(move || {
+                                            std::thread::sleep(delay);
+                                            spawn(&app_clone);
+                                        });
+                                    } else {
+                                        eprintln!("[Sidecar] Máximo de reintentos alcanzado (3/3). No se reintentará.");
+                                    }
+                                }
+                            }
+
                             break;
                         }
                         _ => {}

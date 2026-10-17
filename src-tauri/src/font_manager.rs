@@ -326,9 +326,7 @@ pub fn install_bundled_font() -> Result<String, String> {
 #[tauri::command]
 pub fn save_font_preference(font: String) -> Result<(), String> {
     let trimmed = font.trim().to_string();
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let kyo_dir = std::path::PathBuf::from(appdata).join("kyo");
+    if let Some(kyo_dir) = crate::get_kyo_data_dir() {
         let _ = std::fs::create_dir_all(&kyo_dir);
         let settings_file = kyo_dir.join("settings.json");
         let mut json = if settings_file.is_file() {
@@ -348,9 +346,8 @@ pub fn save_font_preference(font: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_font_preference() -> String {
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let settings_file = std::path::PathBuf::from(appdata).join("kyo").join("settings.json");
+    if let Some(kyo_dir) = crate::get_kyo_data_dir() {
+        let settings_file = kyo_dir.join("settings.json");
         if settings_file.is_file() {
             if let Ok(content) = std::fs::read_to_string(&settings_file) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {

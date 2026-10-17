@@ -10,6 +10,12 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "rebuild": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1",
+    "rebuild:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -Dev",
+    "rebuild:release": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -Release",
+    "rebuild:frontend": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -FrontendOnly",
+    "rebuild:backend": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -BackendOnly",
+    "rebuild:run": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -Run",
     "icon": "node ./scripts/update-icon.mjs",
     "icon:bloub": "node ./scripts/update-icon.mjs --bloub"
   },

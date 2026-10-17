@@ -132,10 +132,13 @@ const BLINKS: number[] = (() => {
 const BLINK_DUR = 0.18
 
 function blinkLid(t: number): number {
+  // Ciclar infinitamente con aritmética modular sobre el calendario pre-generado
+  const period = BLINKS[BLINKS.length - 1]! + 1
+  const wrapped = t % period
   for (let i = 0; i < BLINKS.length; i++) {
     const start = BLINKS[i]!
-    if (t < start) break
-    const k = (t - start) / BLINK_DUR
+    if (wrapped < start) break
+    const k = (wrapped - start) / BLINK_DUR
     if (k >= 0 && k <= 1) {
       // fermeture rapide, reouverture un peu plus lente
       return k < 0.45 ? 1 - k / 0.45 : (k - 0.45) / 0.55
