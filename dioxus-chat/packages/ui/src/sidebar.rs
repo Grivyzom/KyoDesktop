@@ -10,6 +10,13 @@
 
 use dioxus::prelude::*;
 use crate::models::{ActiveView, Workspace, ChatSummary, AppTheme, IsSettingsOpen};
+use crate::dashboard::{
+    use_kyo_cloud, CloudResource, CloudResourceKind, Icon, ICON_CHAT, ICON_CLOUD, ICON_FOLDER,
+    ICON_VAULT,
+};
+
+/// Máximo de espacios de la nube listados directamente en la barra lateral.
+const SIDEBAR_CLOUD_PREVIEW: usize = 5;
 
 const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 
@@ -85,6 +92,16 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     let active_view = try_use_context::<Signal<ActiveView>>();
     let is_settings_open = try_use_context::<IsSettingsOpen>();
     let sidecar_state = try_use_context::<Signal<crate::sidecar::SidecarState>>();
+
+    // Conexión con Kyō Web: espacios/bóvedas sincronizados y contexto activo para nuevos chats
+    let kyo_cloud = use_kyo_cloud();
+    let mut cloud_context = kyo_cloud.active_context;
+    let cloud_account = kyo_cloud.account();
+    let local_ws_count = workspaces.read().len();
+    let cloud_spaces_total = cloud_account
+        .as_ref()
+        .map(|a| a.spaces_count.unwrap_or(a.spaces.len()))
+        .unwrap_or(0);
 
     // Theme state (Dark/Light) — shared via context from App
     let mut app_theme = use_context::<AppTheme>();
@@ -447,7 +464,15 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         span { "Espacios de Trabajo" }
                         div {
                             class: "flex items-center gap-1.5",
-                            span { class: "workspace-badge", "{workspaces.read().len()}" }
+                            span {
+                                class: if cloud_account.is_some() { "workspace-badge workspace-badge-cloud" } else { "workspace-badge" },
+                                title: if cloud_account.is_some() {
+                                    "{local_ws_count} locales · {cloud_spaces_total} en Kyō Web"
+                                } else {
+                                    "{local_ws_count} locales"
+                                },
+                                "{local_ws_count + cloud_spaces_total}"
+                            }
                             button {
                                 class: "p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
                                 title: "Crear espacio de trabajo",
@@ -474,10 +499,20 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     div {
                         class: "flex flex-col gap-1.5",
                         if workspaces.read().is_empty() {
-                            div {
-                                class: "py-2 pl-3 text-left text-xs italic",
-                                style: "color: var(--kyo-fg-muted);",
-                                p { "Sin espacios creados" }
+                            if cloud_account.is_none() {
+                                div {
+                                    class: "sidebar-empty-hint",
+                                    p { "Sin espacios locales" }
+                                    button {
+                                        class: "sidebar-inline-link",
+                                        onclick: move |_| {
+                                            if let Some(mut av) = active_view {
+                                                av.set(ActiveView::Dashboard);
+                                            }
+                                        },
+                                        "Conectar Kyō Web para ver tus espacios"
+                                    }
+                                }
                             }
                         } else {
                             for (ws_idx, ws) in workspaces.read().iter().enumerate() {
@@ -600,6 +635,107 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                                     }
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Espacios y bóvedas sincronizados desde Kyō Web
+                    if let Some(acc) = cloud_account.clone() {
+                        {
+                            let ctx_now = cloud_context.read().clone();
+                            let active_res: Option<CloudResource> = ctx_now.or_else(|| acc.primary_vault_resource());
+                            let query = search_query.read().to_lowercase();
+                            let cloud_spaces: Vec<CloudResource> = acc.spaces.iter()
+                                .filter(|s| query.is_empty() || s.name.to_lowercase().contains(&query))
+                                .take(SIDEBAR_CLOUD_PREVIEW)
+                                .cloned()
+                                .collect();
+                            let active_id = active_res.as_ref().map(|r| r.id.clone());
+                            rsx! {
+                                div {
+                                    class: "sidebar-cloud",
+                                    div {
+                                        class: "sidebar-cloud-title",
+                                        Icon { d: ICON_CLOUD, class: "dk-ic-xs" }
+                                        span { "Kyō Web" }
+                                        span { class: "sidebar-cloud-live", span { class: "dk-dot dk-dot-ok" } "Sincronizado" }
+                                    }
+
+                                    if let Some(res) = active_res.clone() {
+                                        {
+                                            let is_vault = res.kind == CloudResourceKind::Vault;
+                                            let pick = res.clone();
+                                            rsx! {
+                                                button {
+                                                    class: "sidebar-cloud-active",
+                                                    title: "Iniciar un nuevo chat con este contexto",
+                                                    onclick: move |_| {
+                                                        cloud_context.set(Some(pick.clone()));
+                                                        if let Some(mut av) = active_view {
+                                                            av.set(ActiveView::Chat);
+                                                        }
+                                                        if let Some(ref handler) = props.on_new_chat {
+                                                            handler.call(());
+                                                        }
+                                                    },
+                                                    span {
+                                                        class: "sidebar-cloud-active-icon",
+                                                        Icon { d: if is_vault { ICON_VAULT } else { ICON_FOLDER }, class: "dk-ic-sm" }
+                                                    }
+                                                    span {
+                                                        class: "sidebar-cloud-active-text",
+                                                        span { class: "sidebar-cloud-eyebrow", if is_vault { "Bóveda activa" } else { "Espacio activo" } }
+                                                        span { class: "sidebar-cloud-name", "{res.name}" }
+                                                    }
+                                                    Icon { d: ICON_CHAT, class: "dk-ic-sm sidebar-cloud-cta" }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    for space in cloud_spaces.iter() {
+                                        {
+                                            let pick = space.clone();
+                                            let is_active = active_id.as_deref() == Some(space.id.as_str());
+                                            rsx! {
+                                                button {
+                                                    key: "cloud-{space.id}",
+                                                    class: if is_active { "chat-item-btn active" } else { "chat-item-btn" },
+                                                    title: "Nuevo chat con el contexto de este espacio",
+                                                    onclick: move |_| {
+                                                        cloud_context.set(Some(pick.clone()));
+                                                        if let Some(mut av) = active_view {
+                                                            av.set(ActiveView::Chat);
+                                                        }
+                                                        if let Some(ref handler) = props.on_new_chat {
+                                                            handler.call(());
+                                                        }
+                                                    },
+                                                    div {
+                                                        class: "flex items-center gap-2 min-w-0 flex-1",
+                                                        Icon { d: ICON_FOLDER, class: "dk-ic-xs flex-none" }
+                                                        span { class: "truncate", "{space.name}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if cloud_spaces_total > 0 {
+                                        button {
+                                            class: "sidebar-inline-link",
+                                            onclick: move |_| {
+                                                if let Some(mut s) = is_settings_open {
+                                                    s.0.set(false);
+                                                }
+                                                if let Some(mut av) = active_view {
+                                                    av.set(ActiveView::Dashboard);
+                                                }
+                                            },
+                                            "Ver los {cloud_spaces_total} espacios de la nube →"
                                         }
                                     }
                                 }

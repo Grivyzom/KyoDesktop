@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use ui::{
     load_font_family, load_theme_preference, save_theme_preference, spawn_sidecar_service,
-    terminate_sidecar, ActiveView, AppFont, AppTheme, IsSettingsOpen, ChatContainer, Dashboard,
+    terminate_sidecar, ActiveView, AppFont, AppTheme, IsSettingsOpen, ChatContainer, Dashboard, KyoCloud,
     SettingsModal, Sidebar, SidecarState, Workspace,
 };
 
@@ -196,6 +196,8 @@ fn TitleBar() -> Element {
 fn App() -> Element {
     let active_view = use_context_provider(|| Signal::new(ActiveView::Dashboard));
     let _workspaces = use_context_provider(|| Signal::new(Vec::<Workspace>::new()));
+    // Estado compartido de la conexión con Kyō Web (Dashboard ↔ Sidebar); sobrevive al cambio de vista
+    let _kyo_cloud = use_context_provider(KyoCloud::new);
     let is_settings_open = use_context_provider(|| IsSettingsOpen(Signal::new(false)));
     let sidecar_state = use_context_provider(|| Signal::new(SidecarState::default()));
     let app_font = use_context_provider(|| AppFont(Signal::new(load_font_family())));
