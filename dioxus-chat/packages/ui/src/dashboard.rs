@@ -1,10 +1,13 @@
 //! Panel de control exclusivo para la conexión con la plataforma Web y Backend de Kyō.
 //!
-//! Este componente proporciona un único flujo centrado:
-//! - Estado en tiempo real de la conexión con el backend de Kyō (https://kyo.broco.dev).
-//! - Gestión, validación e inspección del Token Key (JWT).
-//! - Diagnóstico de latencia RTT (ms), protocolo y cuenta vinculada.
-//! - Persistencia directa en `%APPDATA%/kyo/session.json`.
+//! Diseño dirigido por estado:
+//! - **Desconectado / Error:** la tarjeta "Clave de Acceso (Token Key)" ocupa el primer plano
+//!   con un paso a paso (Obtener token → Pegar token → Conectar y sincronizar).
+//! - **Conectado:** banner con identidad + telemetría, recursos de Kyō Web (bóveda principal,
+//!   espacios y bóvedas) en la columna principal y credenciales colapsadas en un acordeón.
+//!
+//! El estado de la conexión vive en el contexto [`KyoCloud`] para que la barra lateral
+//! refleje los espacios de la nube y para que sobreviva al cambio de vista.
 
 use dioxus::prelude::*;
 use crate::models::ActiveView;
@@ -16,6 +19,65 @@ use crate::sidecar::{SidecarConnectionStatus, SidecarState};
 
 const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 
+pub(crate) const KYO_WEB_URL: &str = "https://kyo.broco.dev";
+
+// ── Iconos (trazos estilo Lucide, un único `path`) ──────────────────────────
+pub(crate) const ICON_CHECK: &str = "M20 6L9 17l-5-5";
+pub(crate) const ICON_REFRESH: &str = "M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6";
+pub(crate) const ICON_ARROW_RIGHT: &str = "M5 12h14M12 5l7 7-7 7";
+pub(crate) const ICON_EXTERNAL: &str = "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3";
+pub(crate) const ICON_KEY: &str = "M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4";
+pub(crate) const ICON_LOCK: &str = "M5 11h14v10H5zM7 11V7a5 5 0 0 1 10 0v4";
+pub(crate) const ICON_VAULT: &str = "M21 8v13H3V8M1 3h22v5H1zM10 12h4";
+pub(crate) const ICON_FOLDER: &str = "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z";
+pub(crate) const ICON_CHAT: &str = "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z";
+pub(crate) const ICON_CHEVRON: &str = "M9 18l6-6-6-6";
+pub(crate) const ICON_POWER: &str = "M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10";
+pub(crate) const ICON_ALERT: &str = "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 8v4M12 16h.01";
+pub(crate) const ICON_WIFI_OFF: &str = "M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01";
+pub(crate) const ICON_SERVER: &str = "M2 4h20v6H2zM2 14h20v6H2zM6 7h.01M6 17h.01";
+pub(crate) const ICON_CLOCK: &str = "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2";
+pub(crate) const ICON_ACTIVITY: &str = "M22 12h-4l-3 9L9 3l-3 9H2";
+pub(crate) const ICON_SIDEBAR: &str = "M3 3h18v18H3zM9 3v18M13 9l3 3-3 3";
+pub(crate) const ICON_EYE: &str = "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z";
+pub(crate) const ICON_EYE_OFF: &str = "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22";
+pub(crate) const ICON_X: &str = "M18 6L6 18M6 6l12 12";
+pub(crate) const ICON_SHIELD: &str = "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z";
+pub(crate) const ICON_GRID: &str = "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z";
+pub(crate) const ICON_CLOUD: &str = "M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z";
+
+/// Icono SVG de trazo único. `class` controla tamaño/color (`dk-ic`, `dk-ic-sm`, `dk-ic-lg`).
+#[component]
+pub(crate) fn Icon(d: &'static str, #[props(into, default = "dk-ic".to_string())] class: String) -> Element {
+    rsx! {
+        svg {
+            class: "{class}",
+            view_box: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            stroke_width: "2",
+            stroke_linecap: "round",
+            stroke_linejoin: "round",
+            path { d }
+        }
+    }
+}
+
+/// Tipo de recurso alojado en Kyō Web.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CloudResourceKind {
+    Space,
+    Vault,
+}
+
+/// Espacio de trabajo o bóveda sincronizada desde el backend de Kyō.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloudResource {
+    pub id: String,
+    pub name: String,
+    pub kind: CloudResourceKind,
+}
+
 /// Información de la cuenta y recursos detectados en el backend de Kyō.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectedAccountInfo {
@@ -25,6 +87,23 @@ pub struct ConnectedAccountInfo {
     pub spaces_count: Option<usize>,
     pub vaults_count: Option<usize>,
     pub primary_vault: Option<String>,
+    /// Primera página de espacios devuelta por `/api/v1/spaces`.
+    pub spaces: Vec<CloudResource>,
+    /// Primera página de bóvedas devuelta por `/api/v1/vaults`.
+    pub vaults: Vec<CloudResource>,
+}
+
+impl ConnectedAccountInfo {
+    /// Bóveda principal: la primera bóveda devuelta por el servidor.
+    pub fn primary_vault_resource(&self) -> Option<CloudResource> {
+        self.vaults.first().cloned().or_else(|| {
+            self.primary_vault.clone().map(|name| CloudResource {
+                id: name.clone(),
+                name,
+                kind: CloudResourceKind::Vault,
+            })
+        })
+    }
 }
 
 /// Estado de la conexión con la plataforma y backend de Kyō.
@@ -46,6 +125,41 @@ pub enum ConnectionStatus {
     },
 }
 
+/// Estado compartido de Kyō Web (proveído en la raíz de la app).
+///
+/// - `status`: estado de la conexión y recursos sincronizados.
+/// - `active_context`: espacio/bóveda elegido para iniciar nuevos chats.
+#[derive(Clone, Copy, PartialEq)]
+pub struct KyoCloud {
+    pub status: Signal<ConnectionStatus>,
+    pub active_context: Signal<Option<CloudResource>>,
+}
+
+impl KyoCloud {
+    pub fn new() -> Self {
+        Self {
+            status: Signal::new(ConnectionStatus::Disconnected),
+            active_context: Signal::new(None),
+        }
+    }
+
+    /// Cuenta conectada, si la sesión está activa.
+    pub fn account(&self) -> Option<ConnectedAccountInfo> {
+        match &*self.status.read() {
+            ConnectionStatus::Connected { account, .. } => account.clone(),
+            _ => None,
+        }
+    }
+}
+
+/// Obtiene el contexto [`KyoCloud`]; si la app no lo provee, crea uno local.
+pub fn use_kyo_cloud() -> KyoCloud {
+    match try_use_context::<KyoCloud>() {
+        Some(c) => c,
+        None => use_context_provider(KyoCloud::new),
+    }
+}
+
 /// Formatea una marca temporal básica en UTC para la última verificación.
 fn get_current_time_str() -> String {
     let now = std::time::SystemTime::now()
@@ -59,7 +173,7 @@ fn get_current_time_str() -> String {
 }
 
 /// Abre una URL en el navegador predeterminado del sistema operativo.
-fn open_in_browser(url: &str) {
+pub(crate) fn open_in_browser(url: &str) {
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("cmd")
@@ -70,6 +184,42 @@ fn open_in_browser(url: &str) {
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
+}
+
+/// Extrae `{ id, name }` del arreglo `data` de una respuesta paginada.
+fn parse_resources(json: &serde_json::Value, kind: CloudResourceKind) -> Vec<CloudResource> {
+    json.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let name = item
+                        .get("name")
+                        .or_else(|| item.get("title"))
+                        .and_then(|n| n.as_str())?
+                        .trim()
+                        .to_string();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let id = match item.get("id") {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(v) if !v.is_null() => v.to_string(),
+                        _ => name.clone(),
+                    };
+                    Some(CloudResource { id, name, kind })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Lee `total` o, en su defecto, la longitud de `data`.
+fn parse_total(json: &serde_json::Value) -> Option<usize> {
+    json.get("total")
+        .and_then(|t| t.as_u64())
+        .map(|c| c as usize)
+        .or_else(|| json.get("data").and_then(|d| d.as_array()).map(|a| a.len()))
 }
 
 /// Realiza una sonda HTTP al backend de Kyō para validar credenciales y medir latencia.
@@ -119,11 +269,12 @@ pub async fn probe_kyo_backend(
         Err(e) => return Err((format!("Error inicializando cliente HTTP: {e}"), false, None)),
     };
 
-    let spaces_url = if clean_url.ends_with("/api/v1") {
-        format!("{clean_url}/spaces")
+    let api_base = if clean_url.ends_with("/api/v1") {
+        clean_url.clone()
     } else {
-        format!("{clean_url}/api/v1/spaces")
+        format!("{clean_url}/api/v1")
     };
+    let spaces_url = format!("{api_base}/spaces");
 
     let start = std::time::Instant::now();
     let res = match client
@@ -163,16 +314,8 @@ pub async fn probe_kyo_backend(
 
     // Procesar la respuesta JSON de espacios
     let spaces_json: serde_json::Value = res.json().await.unwrap_or_default();
-    let spaces_count = spaces_json
-        .get("total")
-        .and_then(|t| t.as_u64())
-        .map(|c| c as usize)
-        .or_else(|| {
-            spaces_json
-                .get("data")
-                .and_then(|d| d.as_array())
-                .map(|a| a.len())
-        });
+    let spaces_count = parse_total(&spaces_json);
+    let spaces = parse_resources(&spaces_json, CloudResourceKind::Space);
 
     let mut user_id: Option<i64> = None;
     let mut username: Option<String> = None;
@@ -199,14 +342,9 @@ pub async fn probe_kyo_backend(
     }
 
     // Consultar bóvedas si es posible
-    let vaults_url = if clean_url.ends_with("/api/v1") {
-        format!("{clean_url}/vaults")
-    } else {
-        format!("{clean_url}/api/v1/vaults")
-    };
-
+    let vaults_url = format!("{api_base}/vaults");
     let mut vaults_count: Option<usize> = None;
-    let mut primary_vault: Option<String> = None;
+    let mut vaults: Vec<CloudResource> = Vec::new();
 
     if let Ok(v_res) = client
         .get(&vaults_url)
@@ -216,28 +354,12 @@ pub async fn probe_kyo_backend(
     {
         if v_res.status().is_success() {
             if let Ok(v_json) = v_res.json::<serde_json::Value>().await {
-                vaults_count = v_json
-                    .get("total")
-                    .and_then(|t| t.as_u64())
-                    .map(|c| c as usize)
-                    .or_else(|| {
-                        v_json
-                            .get("data")
-                            .and_then(|d| d.as_array())
-                            .map(|a| a.len())
-                    });
-
-                if let Some(arr) = v_json.get("data").and_then(|d| d.as_array()) {
-                    if let Some(first) = arr.first() {
-                        primary_vault = first
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|s| s.to_string());
-                    }
-                }
+                vaults_count = parse_total(&v_json);
+                vaults = parse_resources(&v_json, CloudResourceKind::Vault);
             }
         }
     }
+    let primary_vault = vaults.first().map(|v| v.name.clone());
 
     // Análisis estático del JWT para claims adicionales
     let jwt_data = analyze_token(&trimmed_token);
@@ -260,6 +382,8 @@ pub async fn probe_kyo_backend(
         spaces_count,
         vaults_count,
         primary_vault: primary_vault.clone(),
+        spaces,
+        vaults,
     };
 
     // Guardar en sesión local de Windows (%APPDATA%/kyo/session.json)
@@ -275,79 +399,29 @@ pub async fn probe_kyo_backend(
     Ok((latency_ms, account))
 }
 
-/// Vista "Panel de control": flujo exclusivo para conectar y monitorear el backend de Kyō.
+/// Vista "Panel de control": puente visual entre Kyō Web y el escritorio.
 #[component]
 pub fn Dashboard() -> Element {
     let sidecar_state = try_use_context::<Signal<SidecarState>>();
     let mut active_view = use_context::<Signal<ActiveView>>();
+    let cloud = use_kyo_cloud();
+    let mut connection_status = cloud.status;
+    let mut active_context = cloud.active_context;
 
     // Estados del formulario y credenciales
     let mut token_input = use_signal(load_auth_token);
-    let mut server_url_input = use_signal(load_server_url);
-    let mut is_token_visible = use_signal(|| false);
+    let server_url_input = use_signal(load_server_url);
     let mut is_verifying = use_signal(|| false);
-    let mut show_server_config = use_signal(|| false);
-    let save_feedback_visible = use_signal(|| false);
     let mut last_error_msg = use_signal(|| Option::<String>::None);
+    let flash_msg = use_signal(|| Option::<String>::None);
+    let mut show_credentials = use_signal(|| false);
+    let mut show_vault_explorer = use_signal(|| false);
 
-    // Estado principal de la conexión
-    let mut connection_status = use_signal(|| ConnectionStatus::Disconnected);
-
-    // Auto-verificación al cargar la vista si ya existe un token almacenado
-    let mut has_run_initial_check = use_signal(|| false);
-    use_effect(move || {
-        if *has_run_initial_check.read() {
-            return;
-        }
-        has_run_initial_check.set(true);
-
-        let saved_token = token_input.read().clone();
-        let saved_url = server_url_input.read().clone();
-
-        if !saved_token.trim().is_empty() {
-            is_verifying.set(true);
-            connection_status.set(ConnectionStatus::Connecting);
-
-            let mut conn_sig = connection_status;
-            let mut verify_sig = is_verifying;
-            let sc_opt = sidecar_state;
-
-            dioxus::prelude::spawn(async move {
-                match probe_kyo_backend(&saved_url, &saved_token).await {
-                    Ok((lat, acc)) => {
-                        let time_str = get_current_time_str();
-                        conn_sig.set(ConnectionStatus::Connected {
-                            latency_ms: lat,
-                            server_url: saved_url.clone(),
-                            last_checked: time_str,
-                            account: Some(acc),
-                        });
-                        if let Some(mut sc) = sc_opt {
-                            let mut w = sc.write();
-                            w.latency_ms = Some(lat);
-                            if w.status == SidecarConnectionStatus::Disconnected {
-                                w.status = SidecarConnectionStatus::FallbackCloud;
-                            }
-                        }
-                    }
-                    Err((err, is_auth, code)) => {
-                        conn_sig.set(ConnectionStatus::Error {
-                            message: err,
-                            is_auth_error: is_auth,
-                            status_code: code,
-                            server_url: saved_url,
-                        });
-                    }
-                }
-                verify_sig.set(false);
-            });
-        }
-    });
-
-    // Acción: Comprobar conexión y guardar token
-    let mut handle_connect_and_save = move || {
-        let raw_token = token_input.read().clone();
-        let raw_url = server_url_input.read().clone();
+    // Sonda al backend. `success_msg` = acción explícita del usuario (muestra aviso y
+    // actualiza el estado del sidecar); `None` = verificación silenciosa al abrir la vista.
+    let mut run_probe = move |success_msg: Option<&'static str>| {
+        let raw_token = token_input.peek().clone();
+        let raw_url = server_url_input.peek().clone();
 
         if raw_token.trim().is_empty() {
             last_error_msg.set(Some("Por favor ingrese un Token Key antes de conectar.".to_string()));
@@ -357,22 +431,24 @@ pub fn Dashboard() -> Element {
 
         last_error_msg.set(None);
         is_verifying.set(true);
-        connection_status.set(ConnectionStatus::Connecting);
+        // Durante una re-sincronización se mantiene visible la información actual.
+        if !matches!(*connection_status.peek(), ConnectionStatus::Connected { .. }) {
+            connection_status.set(ConnectionStatus::Connecting);
+        }
 
         let mut conn_sig = connection_status;
         let mut verify_sig = is_verifying;
-        let mut feedback_sig = save_feedback_visible;
-        let mut err_sig = last_error_msg;
+        let mut flash_sig = flash_msg;
         let sc_opt = sidecar_state;
+        let explicit = success_msg.is_some();
 
-        dioxus::prelude::spawn(async move {
-            match probe_kyo_backend(&raw_url, &raw_token).await {
+        spawn(async move {
+            let ok = match probe_kyo_backend(&raw_url, &raw_token).await {
                 Ok((lat, acc)) => {
-                    let time_str = get_current_time_str();
                     conn_sig.set(ConnectionStatus::Connected {
                         latency_ms: lat,
                         server_url: raw_url.clone(),
-                        last_checked: time_str,
+                        last_checked: get_current_time_str(),
                         account: Some(acc),
                     });
                     if let Some(mut sc) = sc_opt {
@@ -382,33 +458,52 @@ pub fn Dashboard() -> Element {
                             w.status = SidecarConnectionStatus::FallbackCloud;
                         }
                     }
-                    feedback_sig.set(true);
-                    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-                    feedback_sig.set(false);
+                    true
                 }
                 Err((err, is_auth, code)) => {
-                    err_sig.set(Some(err.clone()));
                     conn_sig.set(ConnectionStatus::Error {
                         message: err,
                         is_auth_error: is_auth,
                         status_code: code,
                         server_url: raw_url,
                     });
-                    if let Some(mut sc) = sc_opt {
-                        sc.write().status = SidecarConnectionStatus::Disconnected;
+                    if explicit {
+                        if let Some(mut sc) = sc_opt {
+                            sc.write().status = SidecarConnectionStatus::Disconnected;
+                        }
                     }
+                    false
                 }
-            }
+            };
             verify_sig.set(false);
+
+            if let (true, Some(msg)) = (ok, success_msg) {
+                flash_sig.set(Some(msg.to_string()));
+                tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                flash_sig.set(None);
+            }
         });
     };
+
+    // Auto-verificación al abrir la vista si hay token guardado y aún no hay sesión activa.
+    // Solo usa `peek()`, por lo que el efecto no se suscribe y corre una única vez.
+    use_effect(move || {
+        let has_token = !token_input.peek().trim().is_empty();
+        let is_idle = matches!(*connection_status.peek(), ConnectionStatus::Disconnected);
+        if has_token && is_idle {
+            run_probe(None);
+        }
+    });
 
     // Acción: Desconectar y limpiar credenciales
     let mut handle_disconnect = move || {
         let _ = clear_session_auth();
         token_input.set(String::new());
         connection_status.set(ConnectionStatus::Disconnected);
+        active_context.set(None);
         last_error_msg.set(None);
+        show_credentials.set(false);
+        show_vault_explorer.set(false);
 
         if let Some(mut sc) = sidecar_state {
             let mut w = sc.write();
@@ -418,7 +513,8 @@ pub fn Dashboard() -> Element {
     };
 
     let is_loading = *is_verifying.read();
-    let is_connected = matches!(*connection_status.read(), ConnectionStatus::Connected { .. });
+    let status_snapshot = connection_status.read().clone();
+    let server_url_now = server_url_input.read().clone();
 
     rsx! {
         document::Style {
@@ -427,301 +523,172 @@ pub fn Dashboard() -> Element {
         }
 
         div {
-            class: "flex flex-col h-full w-full antialiased font-sans select-none overflow-hidden relative",
-            style: "background-color: var(--kyo-surface-0); color: var(--kyo-fg-primary);",
+            class: "dk-root",
 
             // ── Cabecera Superior del Panel ─────────────────────────────────
             header {
-                class: "flex-none h-14 border-b px-8 flex items-center justify-between z-10",
-                style: "background-color: var(--kyo-surface-1); border-color: var(--kyo-border-default);",
-
-                div {
-                    class: "flex items-center gap-3.5",
-                    div {
-                        class: "w-8 h-8 rounded-xl flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-sm",
-                        svg {
-                            class: "w-4 h-4",
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "2",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            rect { x: "3", y: "3", width: "7", height: "7", rx: "1" }
-                            rect { x: "14", y: "3", width: "7", height: "7", rx: "1" }
-                            rect { x: "14", y: "14", width: "7", height: "7", rx: "1" }
-                            rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
-                        }
-                    }
-                    div {
-                        class: "flex items-center gap-2.5",
-                        h1 {
-                            class: "font-semibold text-sm tracking-tight",
-                            style: "color: var(--kyo-fg-primary);",
-                            "Panel de control"
-                        }
-                        span {
-                            class: "text-[10px] font-mono px-2.5 py-0.5 rounded-full uppercase tracking-wider bg-zinc-800 text-zinc-400 border border-zinc-700/60",
-                            "Conexión Kyō Web"
-                        }
-                    }
-                }
-
-                // Indicador de Estado y Botón de Comprobación Rápida
+                class: "dk-topbar",
                 div {
                     class: "flex items-center gap-3",
-                    {
-                        match *connection_status.read() {
-                            ConnectionStatus::Connected { latency_ms, .. } => rsx! {
-                                span {
-                                    class: "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30",
-                                    span { class: "w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-sm" }
-                                    "Conectado ({latency_ms} ms)"
-                                }
-                            },
-                            ConnectionStatus::Connecting => rsx! {
-                                span {
-                                    class: "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-indigo-500/10 text-indigo-300 border border-indigo-500/30",
-                                    span { class: "w-2 h-2 rounded-full bg-indigo-400 animate-ping" }
-                                    "Comprobando..."
-                                }
-                            },
-                            ConnectionStatus::Error { is_auth_error, .. } => rsx! {
-                                span {
-                                    class: if is_auth_error {
-                                        "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-amber-500/10 text-amber-400 border border-amber-500/30"
-                                    } else {
-                                        "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-rose-500/10 text-rose-400 border border-rose-500/30"
-                                    },
-                                    span { class: "w-2 h-2 rounded-full bg-current" }
-                                    if is_auth_error { "Token Inválido" } else { "Servidor Inaccesible" }
-                                }
-                            },
-                            ConnectionStatus::Disconnected => rsx! {
-                                span {
-                                    class: "px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2 bg-zinc-800 text-zinc-400 border border-zinc-700/60",
-                                    span { class: "w-2 h-2 rounded-full bg-zinc-500" }
-                                    "Desconectado"
-                                }
-                            },
-                        }
-                    }
-
-                    // Botón para refrescar / re-probar
-                    button {
-                        class: "flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-zinc-200 disabled:opacity-50",
-                        disabled: is_loading,
-                        onclick: move |_| handle_connect_and_save(),
-                        svg {
-                            class: if is_loading { "w-3.5 h-3.5 animate-spin" } else { "w-3.5 h-3.5" },
-                            view_box: "0 0 24 24",
-                            fill: "none",
-                            stroke: "currentColor",
-                            stroke_width: "2",
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            path { d: "M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" }
-                        }
-                        span { if is_loading { "Verificando..." } else { "Comprobar estado" } }
+                    div { class: "dk-topbar-icon", Icon { d: ICON_GRID } }
+                    h1 { class: "dk-topbar-title", "Panel de control" }
+                    span { class: "dk-chip dk-chip-mono", "Conexión Kyō Web" }
+                }
+                {
+                    match &status_snapshot {
+                        ConnectionStatus::Connected { .. } => rsx! {
+                            span { class: "dk-status-pill dk-status-ok", span { class: "dk-dot dk-dot-ok animate-pulse" } "Conectado" }
+                        },
+                        ConnectionStatus::Connecting => rsx! {
+                            span { class: "dk-status-pill dk-status-info", span { class: "dk-dot dk-dot-info animate-ping" } "Comprobando..." }
+                        },
+                        ConnectionStatus::Error { is_auth_error, .. } => rsx! {
+                            span {
+                                class: if *is_auth_error { "dk-status-pill dk-status-warn" } else { "dk-status-pill dk-status-bad" },
+                                span { class: "dk-dot dk-dot-current" }
+                                if *is_auth_error { "Token inválido" } else { "Servidor inaccesible" }
+                            }
+                        },
+                        ConnectionStatus::Disconnected => rsx! {
+                            span { class: "dk-status-pill dk-status-off", span { class: "dk-dot dk-dot-off" } "Desconectado" }
+                        },
                     }
                 }
             }
 
-            // ── Contenido Principal Scrollable con Canvas Espacioso ─────────
             main {
-                class: "flex-1 overflow-y-auto w-full",
-
+                class: "dk-scroll",
                 div {
-                    class: "dashboard-canvas flex flex-col gap-7",
+                    class: "dashboard-canvas",
 
-                    // 1. HERO TELEMÉTRICO DE ESTADO EN TIEMPO REAL
+                    // ════════════════════════════════════════════════════════
+                    // 1. BANNER DE ESTADO
+                    // ════════════════════════════════════════════════════════
                     {
-                        match &*connection_status.read() {
+                        match &status_snapshot {
                             ConnectionStatus::Connected { latency_ms, server_url, last_checked, account } => {
-                                let spaces_txt = account.as_ref().and_then(|a| a.spaces_count).map(|c| format!("{c} espacios")).unwrap_or_else(|| "--".to_string());
-                                let vaults_txt = account.as_ref().and_then(|a| a.vaults_count).map(|c| format!("{c} bóvedas")).unwrap_or_else(|| "--".to_string());
-                                let latency_color = if *latency_ms < 150 { "text-emerald-400" } else if *latency_ms < 400 { "text-amber-400" } else { "text-rose-400" };
-
+                                let acc = account.clone();
+                                let name = acc.as_ref().and_then(|a| a.username.clone()).unwrap_or_else(|| "Usuario autenticado".to_string());
+                                let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "K".to_string());
+                                let uid = acc.as_ref().and_then(|a| a.user_id).map(|id| format!("#{id}")).unwrap_or_else(|| "--".to_string());
+                                let role = acc.as_ref().and_then(|a| a.role.clone()).unwrap_or_else(|| "user".to_string()).to_uppercase();
+                                let host = server_url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string();
+                                let lat_class = if *latency_ms < 150 { "dk-lat-good" } else if *latency_ms < 400 { "dk-lat-warn" } else { "dk-lat-bad" };
                                 rsx! {
-                                    div {
-                                        class: "dashboard-hero dashboard-hero-connected p-6 rounded-2xl border transition-all relative overflow-hidden shadow-md",
+                                    section {
+                                        class: "dk-hero dk-hero-ok",
                                         div {
-                                            class: "flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10",
+                                            class: "dk-hero-identity",
+                                            div { class: "dk-avatar", "{initial}" }
                                             div {
-                                                class: "flex items-start gap-4",
+                                                class: "dk-hero-text",
                                                 div {
-                                                    class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex-none shadow-sm",
-                                                    svg {
-                                                        class: "w-6 h-6",
-                                                        view_box: "0 0 24 24",
-                                                        fill: "none",
-                                                        stroke: "currentColor",
-                                                        stroke_width: "2.5",
-                                                        path { d: "M20 6L9 17l-5-5" }
+                                                    class: "dk-hero-title-row",
+                                                    h2 { class: "dk-hero-name", "{name}" }
+                                                    span { class: "dk-chip dk-chip-mono", "ID: {uid}" }
+                                                    span { class: "dk-chip dk-chip-accent", "{role}" }
+                                                }
+                                                div {
+                                                    class: "dk-hero-meta",
+                                                    span { class: "dk-status-pill dk-status-ok", span { class: "dk-dot dk-dot-ok animate-pulse" } "ONLINE 200 OK" }
+                                                    span { class: "dk-meta-item", title: "Latencia RTT",
+                                                        Icon { d: ICON_ACTIVITY, class: "dk-ic-sm" }
+                                                        span { class: "dk-lat {lat_class}", "{latency_ms} ms" }
                                                     }
-                                                }
-                                                div {
-                                                    class: "space-y-1",
-                                                    div {
-                                                        class: "flex items-center gap-2.5 flex-wrap",
-                                                        h2 {
-                                                            class: "text-base font-bold tracking-tight text-zinc-100",
-                                                            style: "color: var(--kyo-fg-primary);",
-                                                            "Conexión activa con el Backend de Kyō"
-                                                        }
-                                                        span { class: "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40", "ONLINE 200 OK" }
+                                                    span { class: "dk-meta-item",
+                                                        Icon { d: ICON_CLOCK, class: "dk-ic-sm" }
+                                                        "Última sincronización: {last_checked}"
                                                     }
-                                                    p {
-                                                        class: "text-xs text-zinc-400 leading-relaxed",
-                                                        "Tu cliente está autenticado y sincronizado con el backend oficial de Kyō ({server_url})."
+                                                    span { class: "dk-meta-item",
+                                                        Icon { d: ICON_SERVER, class: "dk-ic-sm" }
+                                                        "{host}"
                                                     }
-                                                }
-                                            }
-
-                                            // Métricas telemétricas en tiempo real
-                                            div {
-                                                class: "flex items-center gap-3 pt-3 md:pt-0 border-t md:border-t-0 border-zinc-800 flex-wrap sm:flex-nowrap",
-                                                div {
-                                                    class: "px-4 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[96px] flex-1 sm:flex-none shadow-sm",
-                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Latencia RTT" }
-                                                    div { class: "text-sm font-bold font-mono {latency_color} mt-0.5", "{latency_ms} ms" }
-                                                }
-                                                div {
-                                                    class: "px-4 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[96px] flex-1 sm:flex-none shadow-sm",
-                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Espacios" }
-                                                    div { class: "text-xs font-semibold text-zinc-200 mt-1", "{spaces_txt}" }
-                                                }
-                                                div {
-                                                    class: "px-4 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-center min-w-[96px] flex-1 sm:flex-none shadow-sm",
-                                                    div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Bóvedas" }
-                                                    div { class: "text-xs font-semibold text-zinc-200 mt-1 truncate max-w-[100px]", "{vaults_txt}" }
                                                 }
                                             }
                                         }
                                         div {
-                                            class: "mt-4 pt-3.5 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 font-mono",
-                                            span { class: "flex items-center gap-1.5",
-                                                svg { class: "w-3 h-3 text-emerald-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", circle { cx: "12", cy: "12", r: "10" } polyline { points: "12 6 12 12 16 14" } }
-                                                "Última comprobación: {last_checked}"
+                                            class: "dk-hero-actions",
+                                            button {
+                                                class: "dk-btn dk-btn-primary",
+                                                disabled: is_loading,
+                                                onclick: move |_| run_probe(Some("Datos sincronizados con Kyō Web.")),
+                                                Icon { d: ICON_REFRESH, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
+                                                if is_loading { "Sincronizando..." } else { "Sincronizar datos ahora" }
                                             }
-                                            span { class: "flex items-center gap-1.5",
-                                                svg { class: "w-3 h-3 text-indigo-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", rect { x: "3", y: "11", width: "18", height: "11", rx: "2" } path { d: "M7 11V7a5 5 0 0 1 10 0v4" } }
-                                                "Protocolo: HTTPS / REST API v1"
+                                            button {
+                                                class: "dk-btn dk-btn-secondary",
+                                                onclick: move |_| active_view.set(ActiveView::Chat),
+                                                "Ir al Chat de Kyō"
+                                                Icon { d: ICON_ARROW_RIGHT }
                                             }
                                         }
                                     }
                                 }
-                            },
+                            }
                             ConnectionStatus::Connecting => rsx! {
-                                div {
-                                    class: "dashboard-hero dashboard-hero-connecting p-6 rounded-2xl border transition-all flex items-center gap-4 shadow-sm",
+                                section {
+                                    class: "dk-hero dk-hero-info",
                                     div {
-                                        class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex-none",
-                                        svg {
-                                            class: "w-6 h-6 animate-spin",
-                                            view_box: "0 0 24 24",
-                                            fill: "none",
-                                            stroke: "currentColor",
-                                            stroke_width: "2",
-                                            path { d: "M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" }
+                                        class: "dk-hero-identity",
+                                        div { class: "dk-hero-icon dk-tone-info", Icon { d: ICON_REFRESH, class: "dk-ic-lg animate-spin" } }
+                                        div {
+                                            class: "dk-hero-text",
+                                            h2 { class: "dk-hero-name", "Comprobando conexión con Kyō Web..." }
+                                            p { class: "dk-muted", "Verificando el Token Key y midiendo la latencia de los servicios." }
                                         }
-                                    }
-                                    div {
-                                        class: "space-y-1",
-                                        h2 {
-                                            class: "text-base font-bold text-zinc-100",
-                                            style: "color: var(--kyo-fg-primary);",
-                                            "Comprobando conexión con el backend de Kyō..."
-                                        }
-                                        p { class: "text-xs text-zinc-400 leading-relaxed", "Verificando el Token Key y midiendo la latencia de respuesta de los servicios." }
                                     }
                                 }
                             },
                             ConnectionStatus::Error { message, is_auth_error, status_code, server_url } => rsx! {
-                                div {
-                                    class: if *is_auth_error {
-                                        "dashboard-hero dashboard-hero-warning p-6 rounded-2xl border space-y-3 shadow-sm"
-                                    } else {
-                                        "dashboard-hero dashboard-hero-error p-6 rounded-2xl border space-y-3 shadow-sm"
-                                    },
+                                section {
+                                    class: if *is_auth_error { "dk-hero dk-hero-warn" } else { "dk-hero dk-hero-bad" },
                                     div {
-                                        class: "flex items-start gap-4",
+                                        class: "dk-hero-identity",
                                         div {
-                                            class: if *is_auth_error {
-                                                "w-12 h-12 rounded-2xl flex items-center justify-center bg-amber-500/10 text-amber-400 border border-amber-500/30 flex-none"
-                                            } else {
-                                                "w-12 h-12 rounded-2xl flex items-center justify-center bg-rose-500/10 text-rose-400 border border-rose-500/30 flex-none"
-                                            },
-                                            svg {
-                                                class: "w-6 h-6",
-                                                view_box: "0 0 24 24",
-                                                fill: "none",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
-                                                circle { cx: "12", cy: "12", r: "10" }
-                                                line { x1: "12", y1: "8", x2: "12", y2: "12" }
-                                                line { x1: "12", y1: "16", x2: "12.01", y2: "16" }
-                                            }
+                                            class: if *is_auth_error { "dk-hero-icon dk-tone-warn" } else { "dk-hero-icon dk-tone-bad" },
+                                            Icon { d: ICON_ALERT, class: "dk-ic-lg" }
                                         }
                                         div {
-                                            class: "space-y-1.5 flex-1",
+                                            class: "dk-hero-text",
                                             div {
-                                                class: "flex items-center gap-2.5 flex-wrap",
-                                                h2 {
-                                                    class: "text-base font-bold text-zinc-100",
-                                                    style: "color: var(--kyo-fg-primary);",
-                                                    if *is_auth_error { "Error de Autenticación con Kyō" } else { "Error de Conectividad con el Backend" }
+                                                class: "dk-hero-title-row",
+                                                h2 { class: "dk-hero-name",
+                                                    if *is_auth_error { "Error de autenticación con Kyō" } else { "Error de conectividad con el backend" }
                                                 }
                                                 if let Some(code) = status_code {
-                                                    span { class: "px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 text-zinc-300 border border-zinc-700", "HTTP {code}" }
+                                                    span { class: "dk-chip dk-chip-mono", "HTTP {code}" }
                                                 }
                                             }
-                                            p { class: "text-xs text-zinc-300 leading-relaxed", "{message}" }
-                                            p {
-                                                class: "text-[11px] text-zinc-400 font-mono mt-1",
-                                                "Servidor consultado: {server_url}. Asegúrate de ingresar un Token Key válido generado desde la web de Kyō."
-                                            }
+                                            p { class: "dk-body", "{message}" }
+                                            p { class: "dk-muted dk-mono", "Servidor consultado: {server_url}" }
+                                        }
+                                    }
+                                    div {
+                                        class: "dk-hero-actions",
+                                        button {
+                                            class: "dk-btn dk-btn-secondary",
+                                            disabled: is_loading,
+                                            onclick: move |_| run_probe(Some("Conexión restablecida con Kyō Web.")),
+                                            Icon { d: ICON_REFRESH, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
+                                            "Reintentar"
                                         }
                                     }
                                 }
                             },
                             ConnectionStatus::Disconnected => rsx! {
-                                div {
-                                    class: "dashboard-hero dashboard-hero-disconnected p-6 rounded-2xl border relative overflow-hidden shadow-sm",
+                                section {
+                                    class: "dk-hero dk-hero-off",
                                     div {
-                                        class: "flex flex-col sm:flex-row sm:items-center justify-between gap-5",
+                                        class: "dk-hero-identity",
+                                        div { class: "dk-hero-icon dk-tone-off", Icon { d: ICON_WIFI_OFF, class: "dk-ic-lg" } }
                                         div {
-                                            class: "flex items-start gap-4",
+                                            class: "dk-hero-text",
                                             div {
-                                                class: "w-12 h-12 rounded-2xl flex items-center justify-center bg-zinc-800 text-zinc-400 border border-zinc-700/80 flex-none",
-                                                svg {
-                                                    class: "w-6 h-6",
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    path { d: "M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" }
-                                                }
+                                                class: "dk-hero-title-row",
+                                                h2 { class: "dk-hero-name", "Conecta tu escritorio con Kyō Web" }
+                                                span { class: "dk-chip dk-chip-mono", "OFFLINE" }
                                             }
-                                            div {
-                                                class: "space-y-1",
-                                                div {
-                                                    class: "flex items-center gap-2",
-                                                    h2 {
-                                                        class: "text-base font-bold text-zinc-100",
-                                                        style: "color: var(--kyo-fg-primary);",
-                                                        "Desconectado de Kyō Web"
-                                                    }
-                                                    span { class: "px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-800 text-zinc-400 border border-zinc-700", "OFFLINE" }
-                                                }
-                                                p { class: "text-xs text-zinc-400 leading-relaxed", "Introduce tu Token Key a continuación para conectar tu software de escritorio con tu cuenta y habilitar la sincronización en vivo." }
-                                            }
-                                        }
-                                        button {
-                                            class: "flex-none px-4 py-2.5 rounded-xl text-xs font-semibold text-indigo-400 hover:text-indigo-300 bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-500/30 flex items-center gap-2 transition-all cursor-pointer",
-                                            onclick: move |_| open_in_browser("https://kyo.broco.dev"),
-                                            span { "Obtener Token en la Web" }
-                                            svg { class: "w-3.5 h-3.5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", path { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" } }
+                                            p { class: "dk-muted", "Vincula tu cuenta para abrir tus Espacios de Trabajo y Bóvedas de la nube directamente en esta aplicación." }
                                         }
                                     }
                                 }
@@ -729,436 +696,357 @@ pub fn Dashboard() -> Element {
                         }
                     }
 
-                    // 2. GRID PRINCIPAL DE GESTIÓN Y TELEMETRÍA (2 Columnas Equilibradas)
-                    div {
-                        class: "grid grid-cols-1 lg:grid-cols-2 gap-7 items-stretch",
-
-                        // Columna Izquierda: Tarjeta 1 - Autenticación por Token Key
+                    if let Some(msg) = flash_msg.read().as_ref() {
                         div {
-                            class: "dashboard-card p-6 flex flex-col justify-between gap-5",
-
-                            div {
-                                class: "space-y-5",
-
-                                // Header de la Tarjeta
-                                div {
-                                    class: "space-y-1 pb-4 border-b border-zinc-800",
-                                    h3 {
-                                        class: "text-sm font-bold text-zinc-100 flex items-center gap-2.5",
-                                        style: "color: var(--kyo-fg-primary);",
-                                        div {
-                                            class: "w-7 h-7 rounded-lg flex items-center justify-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex-none",
-                                            svg {
-                                                class: "w-4 h-4",
-                                                view_box: "0 0 24 24",
-                                                fill: "none",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
-                                                path { d: "M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" }
-                                            }
-                                        }
-                                        "Clave de Acceso (Token Key)"
-                                    }
-                                    p { class: "text-xs text-zinc-400 leading-relaxed pl-9.5",
-                                        "Ingresa el token generado en tu cuenta web de Kyō para conectar este cliente de escritorio con el backend."
-                                    }
-                                }
-
-                                // Campo de entrada del Token con Icono de Candado, Toggle Mostrar/Ocultar y Botón Limpiar
-                                div {
-                                    class: "space-y-2",
-                                    label {
-                                        class: "block text-xs font-semibold text-zinc-300",
-                                        "Token Key (Bearer / JWT):"
-                                    }
-                                    div {
-                                        class: "relative flex items-center w-full",
-
-                                        // Icono de candado a la izquierda para alejar el texto del borde y centrarlo visualmente
-                                        div {
-                                            class: "absolute left-4 flex items-center pointer-events-none text-zinc-400",
-                                            svg {
-                                                class: "w-4 h-4",
-                                                view_box: "0 0 24 24",
-                                                fill: "none",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
-                                                rect { x: "3", y: "11", width: "18", height: "11", rx: "2", ry: "2" }
-                                                path { d: "M7 11V7a5 5 0 0 1 10 0v4" }
-                                            }
-                                        }
-
-                                        input {
-                                            r#type: if *is_token_visible.read() { "text" } else { "password" },
-                                            class: "w-full py-3.5 rounded-xl font-mono text-xs focus:outline-none transition-all shadow-sm",
-                                            style: "background-color: var(--kyo-surface-0); border: 1px solid var(--kyo-border-default); color: var(--kyo-fg-primary); padding-left: 44px; padding-right: 84px;",
-                                            placeholder: "Pega tu Token Key aquí (eyJhbGciOiJIUzI1Ni...)",
-                                            value: "{token_input}",
-                                            oninput: move |evt| {
-                                                token_input.set(evt.value());
-                                                last_error_msg.set(None);
-                                            },
-                                            onkeydown: move |evt: KeyboardEvent| {
-                                                if evt.key() == Key::Enter {
-                                                    handle_connect_and_save();
-                                                }
-                                            }
-                                        }
-
-                                        // Botones internos (Limpiar y Ojo Mostrar/Ocultar)
-                                        div {
-                                            class: "absolute right-3.5 flex items-center gap-1.5",
-                                            if !token_input.read().is_empty() {
-                                                button {
-                                                    class: "p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
-                                                    title: "Limpiar campo",
-                                                    onclick: move |_| token_input.set(String::new()),
-                                                    svg {
-                                                        class: "w-4 h-4",
-                                                        view_box: "0 0 24 24",
-                                                        fill: "none",
-                                                        stroke: "currentColor",
-                                                        stroke_width: "2",
-                                                        path { d: "M18 6L6 18M6 6l12 12" }
-                                                    }
-                                                }
-                                            }
-                                            button {
-                                                class: "p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
-                                                title: if *is_token_visible.read() { "Ocultar token" } else { "Mostrar token" },
-                                                onclick: move |_| {
-                                                    let cur = *is_token_visible.read();
-                                                    is_token_visible.set(!cur);
-                                                },
-                                                if *is_token_visible.read() {
-                                                    svg {
-                                                        class: "w-4 h-4",
-                                                        view_box: "0 0 24 24",
-                                                        fill: "none",
-                                                        stroke: "currentColor",
-                                                        stroke_width: "2",
-                                                        path { d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" }
-                                                        line { x1: "1", y1: "1", x2: "23", y2: "23" }
-                                                    }
-                                                } else {
-                                                    svg {
-                                                        class: "w-4 h-4",
-                                                        view_box: "0 0 24 24",
-                                                        fill: "none",
-                                                        stroke: "currentColor",
-                                                        stroke_width: "2",
-                                                        path { d: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" }
-                                                        circle { cx: "12", cy: "12", r: "3" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Botones de Acción (Espaciosos, Modernos y Cómodos)
-                                div {
-                                    class: "flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pt-3 border-t border-zinc-800/60",
-                                    div {
-                                        class: "flex items-center gap-3 flex-wrap",
-                                        button {
-                                            class: "px-6 py-3 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white shadow-md shadow-indigo-600/30 flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-50",
-                                            disabled: is_loading,
-                                            onclick: move |_| handle_connect_and_save(),
-                                            svg {
-                                                class: if is_loading { "w-4 h-4 animate-spin" } else { "w-4 h-4" },
-                                                view_box: "0 0 24 24",
-                                                fill: "none",
-                                                stroke: "currentColor",
-                                                stroke_width: "2.5",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                                path { d: "M20 6L9 17l-5-5" }
-                                            }
-                                            span { if is_loading { "Verificando..." } else { "Conectar y Guardar" } }
-                                        }
-
-                                        if is_connected || !token_input.read().trim().is_empty() {
-                                            button {
-                                                class: "px-5 py-3 rounded-xl text-xs sm:text-sm font-medium text-rose-400 hover:text-white hover:bg-rose-600 border border-rose-500/30 flex items-center justify-center gap-2 transition-all cursor-pointer",
-                                                onclick: move |_| handle_disconnect(),
-                                                svg {
-                                                    class: "w-4 h-4",
-                                                    view_box: "0 0 24 24",
-                                                    fill: "none",
-                                                    stroke: "currentColor",
-                                                    stroke_width: "2",
-                                                    path { d: "M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10" }
-                                                }
-                                                span { "Desconectar" }
-                                            }
-                                        }
-                                    }
-
-                                    // Botón para abrir la web de Kyō
-                                    button {
-                                        class: "px-4 py-2.5 rounded-xl text-xs font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/25 flex items-center justify-center gap-2 transition-all cursor-pointer self-start sm:self-auto",
-                                        onclick: move |_| open_in_browser("https://kyo.broco.dev"),
-                                        span { "Obtener Token en la Web" }
-                                        svg {
-                                            class: "w-3.5 h-3.5",
-                                            view_box: "0 0 24 24",
-                                            fill: "none",
-                                            stroke: "currentColor",
-                                            stroke_width: "2",
-                                            path { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" }
-                                        }
-                                    }
-                                }
-
-                                // Mensaje de éxito
-                                if *save_feedback_visible.read() {
-                                    div {
-                                        class: "p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2.5 animate-fade-in",
-                                        svg {
-                                            class: "w-4 h-4 flex-none",
-                                            view_box: "0 0 24 24",
-                                            fill: "none",
-                                            stroke: "currentColor",
-                                            stroke_width: "2",
-                                            path { d: "M20 6L9 17l-5-5" }
-                                        }
-                                        span { "✓ Credenciales verificadas y guardadas correctamente en session.json." }
-                                    }
-                                }
-                            }
-
-                            // Configuración avanzada del servidor backend (Acordeón)
-                            div {
-                                class: "pt-3 border-t border-zinc-800/80 space-y-3",
-                                button {
-                                    class: "flex items-center gap-2 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer",
-                                    onclick: move |_| {
-                                        let c = *show_server_config.read();
-                                        show_server_config.set(!c);
-                                    },
-                                    svg {
-                                        class: if *show_server_config.read() { "w-3.5 h-3.5 rotate-90 transition-transform" } else { "w-3.5 h-3.5 transition-transform" },
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M9 18l6-6-6-6" }
-                                    }
-                                    span { "Configuración avanzada del servidor backend" }
-                                    span { class: "text-[10px] font-mono text-zinc-400", "({server_url_input})" }
-                                }
-
-                                if *show_server_config.read() {
-                                    div {
-                                        class: "p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3",
-                                        label { class: "block text-[11px] font-medium text-zinc-400", "URL del Backend Remoto:" }
-                                        div {
-                                            class: "flex items-center gap-2",
-                                            input {
-                                                class: "flex-1 px-3 py-2 rounded-lg font-mono text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500",
-                                                style: "background-color: var(--kyo-surface-0); border: 1px solid var(--kyo-border-default); color: var(--kyo-fg-primary);",
-                                                value: "{server_url_input}",
-                                                oninput: move |evt| server_url_input.set(evt.value()),
-                                            }
-                                            if *server_url_input.read() != "https://kyo.broco.dev" {
-                                                button {
-                                                    class: "px-3 py-2 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 cursor-pointer",
-                                                    onclick: move |_| server_url_input.set("https://kyo.broco.dev".to_string()),
-                                                    "Restablecer"
-                                                }
-                                            }
-                                        }
-                                        p { class: "text-[11px] text-zinc-400 leading-relaxed", "El valor predeterminado es https://kyo.broco.dev. Solo cámbialo si estás ejecutando una instancia local o un entorno de desarrollo dedicado." }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Columna Derecha: Tarjeta 2 - Cuenta de Usuario en Kyō
-                        div {
-                            class: "dashboard-card p-6 flex flex-col justify-between gap-4",
-
-                            div {
-                                class: "space-y-4",
-
-                                div {
-                                    class: "flex items-center gap-3 pb-3.5 border-b border-zinc-800",
-                                    div {
-                                        class: "w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold text-sm shadow-sm",
-                                        svg {
-                                            class: "w-5 h-5",
-                                            view_box: "0 0 24 24",
-                                            fill: "none",
-                                            stroke: "currentColor",
-                                            stroke_width: "2",
-                                            path { d: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" }
-                                            circle { cx: "12", cy: "7", r: "4" }
-                                        }
-                                    }
-                                    div {
-                                        h3 {
-                                            class: "text-sm font-bold text-zinc-100",
-                                            style: "color: var(--kyo-fg-primary);",
-                                            "Cuenta en Kyō"
-                                        }
-                                        p { class: "text-xs text-zinc-400", "Identidad y recursos vinculados al token" }
-                                    }
-                                }
-
-                                // Datos de la cuenta
-                                {
-                                    if let ConnectionStatus::Connected { account: Some(acc), .. } = &*connection_status.read() {
-                                        let name_str = acc.username.clone().unwrap_or_else(|| "Usuario Autenticado".to_string());
-                                        let uid_str = acc.user_id.map(|id| format!("#{id}")).unwrap_or_else(|| "--".to_string());
-                                        let role_str = acc.role.clone().unwrap_or_else(|| "user".to_string());
-                                        let sp_count = acc.spaces_count.unwrap_or(0);
-                                        let vl_count = acc.vaults_count.unwrap_or(0);
-                                        let primary_v = acc.primary_vault.clone().unwrap_or_else(|| "Mi bóveda".to_string());
-
-                                        rsx! {
-                                            div {
-                                                class: "space-y-4",
-
-                                                // Tarjeta resumen del usuario
-                                                div {
-                                                    class: "p-4 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between",
-                                                    div {
-                                                        class: "space-y-0.5",
-                                                        div {
-                                                            class: "text-sm font-bold text-zinc-100",
-                                                            style: "color: var(--kyo-fg-primary);",
-                                                            "{name_str}"
-                                                        }
-                                                        div { class: "text-[11px] font-mono text-zinc-400", "ID: {uid_str}" }
-                                                    }
-                                                    span {
-                                                        class: "px-2.5 py-0.5 rounded-full text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30",
-                                                        "{role_str}"
-                                                    }
-                                                }
-
-                                                // Mini-grid de recursos vinculados
-                                                div {
-                                                    class: "grid grid-cols-2 gap-3",
-                                                    div {
-                                                        class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center",
-                                                        div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Espacios" }
-                                                        div {
-                                                            class: "text-sm font-bold text-zinc-100 mt-1",
-                                                            style: "color: var(--kyo-fg-primary);",
-                                                            "{sp_count}"
-                                                        }
-                                                        div { class: "text-[10px] text-zinc-400 mt-0.5", "en la nube" }
-                                                    }
-                                                    div {
-                                                        class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center",
-                                                        div { class: "text-[10px] font-mono uppercase text-zinc-400 tracking-wider", "Bóvedas" }
-                                                        div {
-                                                            class: "text-sm font-bold text-zinc-100 mt-1",
-                                                            style: "color: var(--kyo-fg-primary);",
-                                                            "{vl_count}"
-                                                        }
-                                                        div { class: "text-[10px] text-zinc-400 mt-0.5", "en servidor" }
-                                                    }
-                                                }
-
-                                                // Filas de detalle
-                                                div {
-                                                    class: "space-y-2 text-xs",
-                                                    div {
-                                                        class: "flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                        span { class: "text-zinc-400", "Bóveda Principal:" }
-                                                        span { class: "font-semibold text-emerald-400", "{primary_v}" }
-                                                    }
-                                                    div {
-                                                        class: "flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-800",
-                                                        span { class: "text-zinc-400", "Sincronización:" }
-                                                        span { class: "flex items-center gap-1.5 text-zinc-300",
-                                                            span { class: "w-2 h-2 rounded-full bg-emerald-400 animate-pulse" }
-                                                            "En tiempo real"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        rsx! {
-                                            div {
-                                                class: "p-5 rounded-xl bg-zinc-900/40 border border-zinc-800/80 text-center space-y-2 text-xs text-zinc-400 my-auto",
-                                                div {
-                                                    class: "w-10 h-10 rounded-full bg-zinc-800/80 text-zinc-400 mx-auto flex items-center justify-center",
-                                                    svg { class: "w-5 h-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "1.5", path { d: "M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" } circle { cx: "8.5", cy: "7", r: "4" } line { x1: "20", y1: "8", x2: "20", y2: "14" } line { x1: "23", y1: "11", x2: "17", y2: "11" } }
-                                                }
-                                                p { class: "font-medium text-zinc-300", "Sin cuenta vinculada" }
-                                                p { class: "text-[11px] text-zinc-400 leading-relaxed", "Ingresa tu Token Key para ver los detalles de tu usuario y sincronizar tus espacios." }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            class: "dk-flash animate-fade-in",
+                            Icon { d: ICON_CHECK }
+                            span { "{msg}" }
                         }
                     }
 
-                    // 3. BARRA HORIZONTAL: Diagnóstico del Entorno & Acceso al Chat (Full width)
-                    div {
-                        class: "dashboard-card p-6 flex flex-col gap-5",
+                    // ════════════════════════════════════════════════════════
+                    // 2. BENTO GRID (1.7fr | 1fr)
+                    // ════════════════════════════════════════════════════════
+                    {
+                        if let ConnectionStatus::Connected { account, .. } = &status_snapshot {
+                            let acc = account.clone().unwrap_or(ConnectedAccountInfo {
+                                user_id: None, username: None, role: None, spaces_count: None,
+                                vaults_count: None, primary_vault: None, spaces: Vec::new(), vaults: Vec::new(),
+                            });
+                            let ctx_now = active_context.read().clone();
+                            let shown_vault = ctx_now
+                                .clone()
+                                .filter(|c| c.kind == CloudResourceKind::Vault)
+                                .or_else(|| acc.primary_vault_resource());
+                            let is_primary = shown_vault.as_ref().map(|v| acc.vaults.first().map(|f| f.id == v.id).unwrap_or(true)).unwrap_or(true);
+                            let vault_label = if is_primary { "Bóveda principal" } else { "Bóveda activa" };
+                            let vault_name = shown_vault.as_ref().map(|v| v.name.clone()).unwrap_or_else(|| "Sin bóvedas".to_string());
+                            let has_vault = shown_vault.is_some();
+                            let spaces_total = acc.spaces_count.unwrap_or(acc.spaces.len());
+                            let vaults_total = acc.vaults_count.unwrap_or(acc.vaults.len());
+                            let space_preview: Vec<CloudResource> = acc.spaces.iter().take(4).cloned().collect();
+                            let extra_spaces = spaces_total.saturating_sub(space_preview.len());
+                            let vault_list = acc.vaults.clone();
+                            let explorer_open = *show_vault_explorer.read();
+                            let creds_open = *show_credentials.read();
 
-                        div {
-                            class: "flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-800",
-                            div {
-                                class: "flex items-center gap-3",
+                            rsx! {
                                 div {
-                                    class: "w-8 h-8 rounded-xl flex items-center justify-center bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex-none",
-                                    svg {
-                                        class: "w-4 h-4",
-                                        view_box: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        stroke_width: "2",
-                                        path { d: "M5 12h14M12 5l7 7-7 7" }
+                                    class: "dk-bento",
+
+                                    // ── Columna izquierda: Recursos de Kyō Web ──
+                                    section {
+                                        class: "dk-card dk-col-main",
+                                        div {
+                                            class: "dk-card-head",
+                                            div { class: "dk-card-head-icon dk-tone-accent", Icon { d: ICON_CLOUD } }
+                                            div {
+                                                class: "dk-card-head-text",
+                                                h3 { "Recursos Sincronizados desde Kyō Web" }
+                                                p { class: "dk-muted", "Tus espacios y bóvedas de la nube, listos para usarse en el escritorio." }
+                                            }
+                                            button {
+                                                class: "dk-btn dk-btn-ghost",
+                                                onclick: move |_| open_in_browser(KYO_WEB_URL),
+                                                "Abrir Kyō Web"
+                                                Icon { d: ICON_EXTERNAL, class: "dk-ic-sm" }
+                                            }
+                                        }
+
+                                        // Bóveda principal destacada
+                                        div {
+                                            class: "dk-vault",
+                                            div {
+                                                class: "dk-vault-main",
+                                                div { class: "dk-vault-icon", Icon { d: ICON_VAULT, class: "dk-ic-lg" } }
+                                                div {
+                                                    class: "dk-vault-text",
+                                                    span { class: "dk-eyebrow", "{vault_label}" }
+                                                    h4 { class: "dk-vault-name", "{vault_name}" }
+                                                    if has_vault {
+                                                        span { class: "dk-sync-badge", span { class: "dk-dot dk-dot-ok animate-pulse" } "Sincronizada en tiempo real" }
+                                                    }
+                                                }
+                                            }
+                                            if has_vault {
+                                                div {
+                                                    class: "dk-vault-actions",
+                                                    button {
+                                                        class: if explorer_open { "dk-btn dk-btn-secondary is-active" } else { "dk-btn dk-btn-secondary" },
+                                                        onclick: move |_| {
+                                                            let cur = *show_vault_explorer.read();
+                                                            show_vault_explorer.set(!cur);
+                                                        },
+                                                        Icon { d: ICON_FOLDER }
+                                                        if explorer_open { "Cerrar explorador" } else { "Abrir Bóveda en Escritorio" }
+                                                    }
+                                                    {
+                                                        let target = shown_vault.clone();
+                                                        rsx! {
+                                                            button {
+                                                                class: "dk-btn dk-btn-primary",
+                                                                onclick: move |_| {
+                                                                    active_context.set(target.clone());
+                                                                    active_view.set(ActiveView::Chat);
+                                                                },
+                                                                Icon { d: ICON_CHAT }
+                                                                "Usar en Nuevo Chat"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if explorer_open {
+                                                div {
+                                                    class: "dk-vault-explorer animate-fade-in",
+                                                    div { class: "dk-explorer-title", "Bóvedas en tu cuenta ({vaults_total})" }
+                                                    if vault_list.is_empty() {
+                                                        p { class: "dk-muted", "El servidor no devolvió bóvedas para esta cuenta." }
+                                                    }
+                                                    for v in vault_list.iter() {
+                                                        {
+                                                            let is_current = shown_vault.as_ref().map(|s| s.id == v.id).unwrap_or(false);
+                                                            let pick = v.clone();
+                                                            rsx! {
+                                                                div {
+                                                                    key: "{v.id}",
+                                                                    class: if is_current { "dk-explorer-row is-current" } else { "dk-explorer-row" },
+                                                                    span { class: "dk-explorer-name", Icon { d: ICON_VAULT, class: "dk-ic-sm" } "{v.name}" }
+                                                                    if is_current {
+                                                                        span { class: "dk-chip dk-chip-ok", "Activa" }
+                                                                    } else {
+                                                                        button {
+                                                                            class: "dk-btn dk-btn-ghost dk-btn-xs",
+                                                                            onclick: move |_| active_context.set(Some(pick.clone())),
+                                                                            "Seleccionar"
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Resumen de espacios y bóvedas en la nube
+                                        div {
+                                            class: "dk-res-grid",
+                                            div {
+                                                class: "dk-res-tile",
+                                                div { class: "dk-res-head",
+                                                    span { class: "dk-res-icon dk-tone-accent", Icon { d: ICON_FOLDER } }
+                                                    span { class: "dk-eyebrow", "Espacios de trabajo" }
+                                                }
+                                                div { class: "dk-res-value", "{spaces_total}" }
+                                                div { class: "dk-muted", "en la nube" }
+                                                if !space_preview.is_empty() {
+                                                    div {
+                                                        class: "dk-res-chips",
+                                                        for s in space_preview.iter() {
+                                                            {
+                                                                let pick = s.clone();
+                                                                rsx! {
+                                                                    button {
+                                                                        key: "{s.id}",
+                                                                        class: "dk-res-chip",
+                                                                        title: "Iniciar chat con este espacio",
+                                                                        onclick: move |_| {
+                                                                            active_context.set(Some(pick.clone()));
+                                                                            active_view.set(ActiveView::Chat);
+                                                                        },
+                                                                        "{s.name}"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        if extra_spaces > 0 {
+                                                            span { class: "dk-res-chip dk-res-chip-more", "+{extra_spaces}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            div {
+                                                class: "dk-res-tile",
+                                                div { class: "dk-res-head",
+                                                    span { class: "dk-res-icon dk-tone-ok", Icon { d: ICON_VAULT } }
+                                                    span { class: "dk-eyebrow", "Bóvedas" }
+                                                }
+                                                div { class: "dk-res-value", "{vaults_total}" }
+                                                div { class: "dk-muted", "en servidor" }
+                                            }
+                                        }
+
+                                        div {
+                                            class: "dk-res-footer",
+                                            p { class: "dk-muted", "Tus espacios de la nube aparecen en la barra lateral para iniciar chats con su contexto." }
+                                            button {
+                                                class: "dk-btn dk-btn-secondary",
+                                                disabled: is_loading,
+                                                onclick: move |_| run_probe(Some("Barra lateral sincronizada con tus espacios de Kyō Web.")),
+                                                Icon { d: ICON_SIDEBAR, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
+                                                "Sincronizar con barra lateral"
+                                            }
+                                        }
+                                    }
+
+                                    // ── Columna derecha: Seguridad y diagnóstico ──
+                                    div {
+                                        class: "dk-col-side",
+                                        DiagnosticsCard { server_url: server_url_now.clone() }
+
+                                        section {
+                                            class: "dk-card dk-accordion",
+                                            button {
+                                                class: "dk-accordion-head",
+                                                onclick: move |_| {
+                                                    let cur = *show_credentials.read();
+                                                    show_credentials.set(!cur);
+                                                },
+                                                span { class: "dk-card-head-icon dk-tone-accent", Icon { d: ICON_KEY } }
+                                                span { class: "dk-accordion-title", "Configuración de Credenciales y Servidor (Token JWT)" }
+                                                Icon { d: ICON_CHEVRON, class: if creds_open { "dk-ic-sm dk-chevron is-open" } else { "dk-ic-sm dk-chevron" } }
+                                            }
+                                            if creds_open {
+                                                div {
+                                                    class: "dk-accordion-body animate-fade-in",
+                                                    CredentialFields {
+                                                        token_input,
+                                                        server_url_input,
+                                                        last_error: last_error_msg,
+                                                        on_submit: move |_| run_probe(Some("Token actualizado y guardado en session.json.")),
+                                                    }
+                                                    div {
+                                                        class: "dk-row-actions",
+                                                        button {
+                                                            class: "dk-btn dk-btn-secondary",
+                                                            disabled: is_loading,
+                                                            onclick: move |_| run_probe(Some("Token actualizado y guardado en session.json.")),
+                                                            Icon { d: ICON_CHECK }
+                                                            "Guardar nuevo token"
+                                                        }
+                                                        button {
+                                                            class: "dk-btn dk-btn-danger",
+                                                            onclick: move |_| handle_disconnect(),
+                                                            Icon { d: ICON_POWER }
+                                                            "Desconectar"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
+                            }
+                        } else {
+                            // Desconectado / comprobando / error: Token Key en primer plano.
+                            let has_token = !token_input.read().trim().is_empty();
+                            let step1 = if has_token { "dk-step is-done" } else { "dk-step is-current" };
+                            let step2 = if has_token { "dk-step is-done" } else { "dk-step" };
+                            let step3 = if has_token { "dk-step is-current" } else { "dk-step" };
+                            rsx! {
                                 div {
-                                    h3 {
-                                        class: "text-sm font-bold text-zinc-100",
-                                        style: "color: var(--kyo-fg-primary);",
-                                        "Diagnóstico del Entorno"
-                                    }
-                                    p { class: "text-xs text-zinc-400", "Parámetros de conexión local, almacenamiento persistente y seguridad de transporte" }
-                                }
-                            }
-                            button {
-                                class: "px-4.5 py-2.5 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center gap-2 transition-all cursor-pointer shadow-sm self-start sm:self-auto",
-                                onclick: move |_| active_view.set(ActiveView::Chat),
-                                span { "Ir al Chat de Kyō" }
-                                svg {
-                                    class: "w-3.5 h-3.5",
-                                    view_box: "0 0 24 24",
-                                    fill: "none",
-                                    stroke: "currentColor",
-                                    stroke_width: "2",
-                                    path { d: "M5 12h14M12 5l7 7-7 7" }
-                                }
-                            }
-                        }
+                                    class: "dk-bento",
 
-                        div {
-                            class: "grid grid-cols-1 md:grid-cols-3 gap-3.5 font-mono text-[11px]",
-                            div {
-                                class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col gap-1.5",
-                                span { class: "text-[10px] uppercase font-sans text-zinc-400 tracking-wider", "Endpoint API" }
-                                span { class: "text-xs text-zinc-200 truncate font-mono", "{server_url_input}/api/v1" }
-                            }
-                            div {
-                                class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col gap-1.5",
-                                span { class: "text-[10px] uppercase font-sans text-zinc-400 tracking-wider", "Persistencia Local" }
-                                span { class: "text-xs text-emerald-400 font-medium font-sans", "%APPDATA%/kyo/session.json" }
-                            }
-                            div {
-                                class: "p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col gap-1.5",
-                                span { class: "text-[10px] uppercase font-sans text-zinc-400 tracking-wider", "Seguridad de Transporte" }
-                                span { class: "text-xs text-indigo-300 font-sans", "Bearer Token TLS Encrypted" }
+                                    section {
+                                        class: "dk-card dk-col-main",
+                                        div {
+                                            class: "dk-card-head",
+                                            div { class: "dk-card-head-icon dk-tone-accent", Icon { d: ICON_KEY } }
+                                            div {
+                                                class: "dk-card-head-text",
+                                                h3 { "Clave de Acceso (Token Key)" }
+                                                p { class: "dk-muted", "Conecta este cliente de escritorio con tu cuenta de Kyō Web en tres pasos." }
+                                            }
+                                        }
+
+                                        ol {
+                                            class: "dk-steps",
+                                            li {
+                                                class: "{step1}",
+                                                span { class: "dk-step-num", if has_token { Icon { d: ICON_CHECK, class: "dk-ic-sm" } } else { "1" } }
+                                                div {
+                                                    class: "dk-step-body",
+                                                    span { class: "dk-step-title", "Obtener Token en la Web" }
+                                                    span { class: "dk-muted", "Genera tu Token Key desde tu cuenta en kyo.broco.dev." }
+                                                    button {
+                                                        class: "dk-btn dk-btn-ghost dk-btn-xs",
+                                                        onclick: move |_| open_in_browser(KYO_WEB_URL),
+                                                        "Abrir kyo.broco.dev"
+                                                        Icon { d: ICON_EXTERNAL, class: "dk-ic-sm" }
+                                                    }
+                                                }
+                                            }
+                                            li {
+                                                class: "{step2}",
+                                                span { class: "dk-step-num", if has_token { Icon { d: ICON_CHECK, class: "dk-ic-sm" } } else { "2" } }
+                                                div {
+                                                    class: "dk-step-body",
+                                                    span { class: "dk-step-title", "Pegar Token" }
+                                                    span { class: "dk-muted", "Pégalo en el campo de abajo. Se guarda solo en este equipo." }
+                                                }
+                                            }
+                                            li {
+                                                class: "{step3}",
+                                                span { class: "dk-step-num", "3" }
+                                                div {
+                                                    class: "dk-step-body",
+                                                    span { class: "dk-step-title", "Conectar y Sincronizar" }
+                                                    span { class: "dk-muted", "Validamos el token y traemos tus espacios y bóvedas." }
+                                                }
+                                            }
+                                        }
+
+                                        CredentialFields {
+                                            token_input,
+                                            server_url_input,
+                                            last_error: last_error_msg,
+                                            on_submit: move |_| run_probe(Some("Credenciales verificadas y guardadas en session.json.")),
+                                        }
+
+                                        div {
+                                            class: "dk-row-actions",
+                                            button {
+                                                class: "dk-btn dk-btn-primary dk-btn-lg",
+                                                disabled: is_loading || !has_token,
+                                                onclick: move |_| run_probe(Some("Credenciales verificadas y guardadas en session.json.")),
+                                                Icon { d: if is_loading { ICON_REFRESH } else { ICON_CHECK }, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
+                                                if is_loading { "Verificando..." } else { "Conectar y Sincronizar" }
+                                            }
+                                            if has_token {
+                                                button {
+                                                    class: "dk-btn dk-btn-danger",
+                                                    onclick: move |_| handle_disconnect(),
+                                                    Icon { d: ICON_POWER }
+                                                    "Olvidar token"
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    div {
+                                        class: "dk-col-side",
+                                        section {
+                                            class: "dk-card",
+                                            div {
+                                                class: "dk-card-head",
+                                                div { class: "dk-card-head-icon dk-tone-ok", Icon { d: ICON_CLOUD } }
+                                                div {
+                                                    class: "dk-card-head-text",
+                                                    h3 { "Al conectar podrás" }
+                                                }
+                                            }
+                                            ul {
+                                                class: "dk-benefits",
+                                                li { Icon { d: ICON_FOLDER, class: "dk-ic-sm" } "Ver tus Espacios de Trabajo de la nube en la barra lateral." }
+                                                li { Icon { d: ICON_VAULT, class: "dk-ic-sm" } "Abrir tus Bóvedas y usarlas como contexto de chat." }
+                                                li { Icon { d: ICON_REFRESH, class: "dk-ic-sm" } "Sincronizar cambios con Kyō Web en un clic." }
+                                            }
+                                        }
+                                        DiagnosticsCard { server_url: server_url_now.clone() }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1168,3 +1056,135 @@ pub fn Dashboard() -> Element {
     }
 }
 
+/// Diagnóstico compacto del entorno local (endpoint, persistencia, seguridad).
+#[component]
+fn DiagnosticsCard(server_url: String) -> Element {
+    let endpoint = format!("{}/api/v1", server_url.trim_end_matches('/'));
+    rsx! {
+        section {
+            class: "dk-card",
+            div {
+                class: "dk-card-head",
+                div { class: "dk-card-head-icon dk-tone-info", Icon { d: ICON_SHIELD } }
+                div {
+                    class: "dk-card-head-text",
+                    h3 { "Diagnóstico del Entorno" }
+                    p { class: "dk-muted", "Conexión local, almacenamiento y transporte" }
+                }
+            }
+            dl {
+                class: "dk-diag",
+                div { class: "dk-diag-row",
+                    dt { "Endpoint API" }
+                    dd { class: "dk-mono", title: "{endpoint}", "{endpoint}" }
+                }
+                div { class: "dk-diag-row",
+                    dt { "Persistencia Local" }
+                    dd { class: "dk-mono", "%APPDATA%/kyo/session.json" }
+                }
+                div { class: "dk-diag-row",
+                    dt { "Seguridad" }
+                    dd { span { class: "dk-chip dk-chip-ok", Icon { d: ICON_LOCK, class: "dk-ic-xs" } "Bearer Token · TLS" } }
+                }
+            }
+        }
+    }
+}
+
+/// Campos de credenciales: Token Key (con mostrar/ocultar/limpiar) y URL del backend.
+#[component]
+fn CredentialFields(
+    token_input: Signal<String>,
+    server_url_input: Signal<String>,
+    last_error: Signal<Option<String>>,
+    on_submit: EventHandler<()>,
+) -> Element {
+    let mut token_input = token_input;
+    let mut server_url_input = server_url_input;
+    let mut last_error = last_error;
+    let mut is_token_visible = use_signal(|| false);
+    let mut show_server_config = use_signal(|| false);
+    let visible = *is_token_visible.read();
+    let server_open = *show_server_config.read();
+
+    rsx! {
+        div {
+            class: "dk-field",
+            label { class: "dk-label", r#for: "kyo-token-input", "Token Key (Bearer / JWT)" }
+            div {
+                class: "dk-input-wrap",
+                span { class: "dk-input-icon", Icon { d: ICON_LOCK } }
+                input {
+                    id: "kyo-token-input",
+                    r#type: if visible { "text" } else { "password" },
+                    class: "dashboard-input dk-input",
+                    placeholder: "Pega tu Token Key aquí (eyJhbGciOiJIUzI1Ni...)",
+                    autocomplete: "off",
+                    spellcheck: "false",
+                    value: "{token_input}",
+                    oninput: move |evt| {
+                        token_input.set(evt.value());
+                        last_error.set(None);
+                    },
+                    onkeydown: move |evt: KeyboardEvent| {
+                        if evt.key() == Key::Enter {
+                            on_submit.call(());
+                        }
+                    }
+                }
+                div {
+                    class: "dk-input-tools",
+                    if !token_input.read().is_empty() {
+                        button {
+                            class: "dk-icon-btn",
+                            title: "Limpiar campo",
+                            onclick: move |_| token_input.set(String::new()),
+                            Icon { d: ICON_X }
+                        }
+                    }
+                    button {
+                        class: "dk-icon-btn",
+                        title: if visible { "Ocultar token" } else { "Mostrar token" },
+                        onclick: move |_| is_token_visible.set(!visible),
+                        Icon { d: if visible { ICON_EYE_OFF } else { ICON_EYE } }
+                    }
+                }
+            }
+            if let Some(err) = last_error.read().as_ref() {
+                p { class: "dk-field-error", "{err}" }
+            }
+        }
+
+        div {
+            class: "dk-field",
+            button {
+                class: "dk-link-btn",
+                onclick: move |_| show_server_config.set(!server_open),
+                Icon { d: ICON_CHEVRON, class: if server_open { "dk-ic-sm dk-chevron is-open" } else { "dk-ic-sm dk-chevron" } }
+                "Servidor backend"
+                span { class: "dk-mono dk-muted", "({server_url_input})" }
+            }
+            if server_open {
+                div {
+                    class: "dk-server-box",
+                    div {
+                        class: "flex items-center gap-2",
+                        input {
+                            class: "dashboard-input dk-input-plain",
+                            value: "{server_url_input}",
+                            oninput: move |evt| server_url_input.set(evt.value()),
+                        }
+                        if *server_url_input.read() != KYO_WEB_URL {
+                            button {
+                                class: "dk-btn dk-btn-secondary dk-btn-xs",
+                                onclick: move |_| server_url_input.set(KYO_WEB_URL.to_string()),
+                                "Restablecer"
+                            }
+                        }
+                    }
+                    p { class: "dk-muted", "Predeterminado: https://kyo.broco.dev. Cámbialo solo para una instancia local o de desarrollo." }
+                }
+            }
+        }
+    }
+}
