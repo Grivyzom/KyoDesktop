@@ -14,6 +14,8 @@ import {
   parseAndValidateJwt,
   sanitizeToken,
   validateServerUrl,
+  warmupServerOrigin,
+  invalidateProbeCache,
   type ConnectionProbeResult,
   type JwtValidationResult,
   type KyoAccountInfo,
@@ -75,9 +77,14 @@ export function useKyoBridge() {
    * Ejecuta el sondeo de conectividad: primero intenta con el Sidecar local (puerto efímero).
    * Si no hay sidecar o no responde, sondea la URL del servidor web / MCP remoto con medición de latencia y verificación de token.
    */
-  async function refreshHealth(targetUrl?: string, targetToken?: string): Promise<ConnectionProbeResult | null> {
+  async function refreshHealth(
+    targetUrl?: string,
+    targetToken?: string,
+    forceRefresh = false
+  ): Promise<ConnectionProbeResult | null> {
     const urlToTest = targetUrl !== undefined ? targetUrl : serverUrl.value;
     const tokenToTest = targetToken !== undefined ? targetToken : jwtToken.value;
+    warmupServerOrigin(urlToTest);
 
     const currentRequestId = ++healthRequestId;
     isVerifying.value = true;
@@ -110,7 +117,7 @@ export function useKyoBridge() {
 
     // 2. Si no hay sidecar o no responde, sondeo activo contra la aplicación web / endpoint MCP remoto
     healthData.value = null;
-    const probe = await probeMcpConnection(urlToTest, tokenToTest);
+    const probe = await probeMcpConnection(urlToTest, tokenToTest, 4000, forceRefresh);
     if (currentRequestId !== healthRequestId) { isVerifying.value = false; return probe; }
 
     lastProbeResult.value = probe;
@@ -233,8 +240,9 @@ export function useKyoBridge() {
       }
     }
 
-    // Probar conectividad real contra el servidor antes de consolidar
-    const probe = await refreshHealth(urlValidation.normalizedUrl, sanitized);
+    // Probar conectividad real contra el servidor antes de consolidar (forzando sondeo fresco)
+    invalidateProbeCache();
+    const probe = await refreshHealth(urlValidation.normalizedUrl, sanitized, true);
 
     if (probe && !probe.reachable) {
       return {
@@ -277,6 +285,7 @@ export function useKyoBridge() {
   async function updateToken(newToken: string) {
     const sanitized = sanitizeToken(newToken);
     jwtToken.value = sanitized;
+    invalidateProbeCache();
     const currentProfile = activeProfile.value;
     await saveSessionConfig(
       sanitized,
@@ -286,7 +295,7 @@ export function useKyoBridge() {
       accountInfo.value?.username,
       accountInfo.value?.email
     );
-    await refreshHealth();
+    await refreshHealth(serverUrl.value, sanitized, true);
   }
 
   return {

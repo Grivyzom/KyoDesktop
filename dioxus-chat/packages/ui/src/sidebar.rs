@@ -105,6 +105,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
     // Theme state (Dark/Light) — shared via context from App
     let mut app_theme = use_context::<AppTheme>();
+    let app_theme_mode = try_use_context::<crate::models::AppThemeMode>();
 
     // Calculated style values
     let current_width = if *is_collapsed.read() { 0.0 } else { *width.read() };
@@ -269,6 +270,38 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                     rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
                                 }
                                 span { "Panel de control" }
+                            }
+                        }
+                    }
+
+                    // Navigation Button: "Bóveda"
+                    {
+                        let is_vault_view = active_view.map(|av| *av.read() == ActiveView::Vault).unwrap_or(false);
+                        let local_v_count = crate::vault::load_local_vault_records().len();
+                        rsx! {
+                            button {
+                                class: if is_vault_view { "sidebar-btn-nav active justify-between" } else { "sidebar-btn-nav justify-between" },
+                                title: "Explorar archivos y carpetas de tus bóvedas locales y en la nube",
+                                onclick: move |_| {
+                                    if let Some(mut s) = is_settings_open {
+                                        s.0.set(false);
+                                    }
+                                    if let Some(mut av) = active_view {
+                                        av.set(ActiveView::Vault);
+                                    }
+                                },
+                                div {
+                                    class: "flex items-center gap-2.5",
+                                    Icon { d: ICON_VAULT, class: "w-4 h-4 text-amber-400 flex-none" }
+                                    span { "Bóveda" }
+                                }
+                                if local_v_count > 0 {
+                                    span {
+                                        class: "text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
+                                        title: "Modo Bóveda Local activo ({local_v_count} local)",
+                                        "{local_v_count} local"
+                                    }
+                                }
                             }
                         }
                     }
@@ -668,29 +701,59 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                                         {
                                             let is_vault = res.kind == CloudResourceKind::Vault;
                                             let pick = res.clone();
+                                            let chat_pick = res.clone();
                                             rsx! {
-                                                button {
-                                                    class: "sidebar-cloud-active",
-                                                    title: "Iniciar un nuevo chat con este contexto",
-                                                    onclick: move |_| {
-                                                        cloud_context.set(Some(pick.clone()));
-                                                        if let Some(mut av) = active_view {
-                                                            av.set(ActiveView::Chat);
+                                                div {
+                                                    class: "flex items-center gap-1 w-full",
+                                                    button {
+                                                        class: "sidebar-cloud-active flex-1 min-w-0",
+                                                        title: if is_vault { "Ver y explorar archivos de esta bóveda" } else { "Iniciar un nuevo chat con este contexto" },
+                                                        onclick: move |_| {
+                                                            cloud_context.set(Some(pick.clone()));
+                                                            if let Some(mut av) = active_view {
+                                                                if is_vault {
+                                                                    av.set(ActiveView::Vault);
+                                                                } else {
+                                                                    av.set(ActiveView::Chat);
+                                                                }
+                                                            }
+                                                            if !is_vault {
+                                                                if let Some(ref handler) = props.on_new_chat {
+                                                                    handler.call(());
+                                                                }
+                                                            }
+                                                        },
+                                                        span {
+                                                            class: "sidebar-cloud-active-icon",
+                                                            Icon { d: if is_vault { ICON_VAULT } else { ICON_FOLDER }, class: "dk-ic-sm" }
                                                         }
-                                                        if let Some(ref handler) = props.on_new_chat {
-                                                            handler.call(());
+                                                        span {
+                                                            class: "sidebar-cloud-active-text",
+                                                            span { class: "sidebar-cloud-eyebrow", if is_vault { "Bóveda activa" } else { "Espacio activo" } }
+                                                            span { class: "sidebar-cloud-name", "{res.name}" }
                                                         }
-                                                    },
-                                                    span {
-                                                        class: "sidebar-cloud-active-icon",
-                                                        Icon { d: if is_vault { ICON_VAULT } else { ICON_FOLDER }, class: "dk-ic-sm" }
+                                                        if is_vault {
+                                                            Icon { d: ICON_FOLDER, class: "dk-ic-sm sidebar-cloud-cta text-amber-400" }
+                                                        } else {
+                                                            Icon { d: ICON_CHAT, class: "dk-ic-sm sidebar-cloud-cta" }
+                                                        }
                                                     }
-                                                    span {
-                                                        class: "sidebar-cloud-active-text",
-                                                        span { class: "sidebar-cloud-eyebrow", if is_vault { "Bóveda activa" } else { "Espacio activo" } }
-                                                        span { class: "sidebar-cloud-name", "{res.name}" }
+                                                    if is_vault {
+                                                        button {
+                                                            class: "p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-indigo-400 transition-colors flex-none",
+                                                            title: "Chatear con esta bóveda",
+                                                            onclick: move |_| {
+                                                                cloud_context.set(Some(chat_pick.clone()));
+                                                                if let Some(mut av) = active_view {
+                                                                    av.set(ActiveView::Chat);
+                                                                }
+                                                                if let Some(ref handler) = props.on_new_chat {
+                                                                    handler.call(());
+                                                                }
+                                                            },
+                                                            Icon { d: ICON_CHAT, class: "dk-ic-sm" }
+                                                        }
                                                     }
-                                                    Icon { d: ICON_CHAT, class: "dk-ic-sm sidebar-cloud-cta" }
                                                 }
                                             }
                                         }
@@ -746,6 +809,11 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                 }
 
                 // ------------------------------------------------------------
+                // 2b. MUSIC WIDGET: Now Playing / Spotify & SMTC Controls
+                // ------------------------------------------------------------
+                crate::music::SidebarMusicWidget {}
+
+                // ------------------------------------------------------------
                 // 3. BOTTOM DOCK: Settings, Theme, Docs, GitHub
                 // ------------------------------------------------------------
                 div {
@@ -778,8 +846,17 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         class: "sidebar-dock-btn",
                         title: if *app_theme.0.read() { "Cambiar a modo claro" } else { "Cambiar a modo oscuro" },
                         onclick: move |_| {
-                            let curr = *app_theme.0.read();
-                            app_theme.0.set(!curr);
+                            let next_is_dark = !*app_theme.0.read();
+                            app_theme.0.set(next_is_dark);
+                            let next_mode = if next_is_dark {
+                                crate::models::ThemePreference::Dark
+                            } else {
+                                crate::models::ThemePreference::Light
+                            };
+                            if let Some(mut m) = app_theme_mode {
+                                m.0.set(next_mode);
+                            }
+                            let _ = crate::settings::save_theme_mode(next_mode);
                         },
                         if *app_theme.0.read() {
                             // Moon icon

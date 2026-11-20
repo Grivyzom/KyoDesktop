@@ -126,10 +126,7 @@ fn parse_port_from_line(line: &str) -> Option<u16> {
 
 /// Realiza un ping HTTP a `/health` en el puerto especificado para calcular la latencia en milisegundos.
 pub async fn check_sidecar_health(port: u16) -> Option<u64> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(2500))
-        .build()
-        .ok()?;
+    let client = crate::settings::shared_probe_client();
 
     let url = format!("http://127.0.0.1:{port}/health");
     let start = std::time::Instant::now();
@@ -145,16 +142,10 @@ pub async fn check_sidecar_health(port: u16) -> Option<u64> {
 
 /// Realiza un sondeo a la nube remota de Kyo (`/api/v1/health`) para medir latencia y validar conectividad.
 pub async fn check_cloud_health() -> Option<u64> {
-    let upstream = std::env::var("KYO_UPSTREAM")
-        .or_else(|_| std::env::var("KYO_SERVER_URL"))
-        .unwrap_or_else(|_| "https://kyo.broco.dev".to_string());
+    let upstream = crate::settings::load_server_url();
+    let token = crate::settings::load_auth_token();
 
-    let token = std::env::var("KYO_AUTH_TOKEN").ok();
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(3500))
-        .build()
-        .ok()?;
+    let client = crate::settings::shared_probe_client();
 
     let clean = upstream.trim_end_matches('/');
     let url = if clean.ends_with("/api/v1") {
@@ -164,10 +155,8 @@ pub async fn check_cloud_health() -> Option<u64> {
     };
 
     let mut req = client.get(&url);
-    if let Some(ref t) = token {
-        if !t.trim().is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", t.trim()));
-        }
+    if !token.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", token.trim()));
     }
 
     let start = std::time::Instant::now();

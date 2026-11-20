@@ -15,7 +15,12 @@
     "rebuild:release": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -Release",
     "rebuild:frontend": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -FrontendOnly",
     "rebuild:backend": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -BackendOnly",
+    "rebuild:kyo": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -KyoOnly",
+    "rebuild:agent": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -KyoAgentOnly",
+    "rebuild:desktop": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -DioxusOnly",
+    "rebuild:sidecar": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -SidecarOnly",
     "rebuild:run": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -Run",
+    "kyo:build": "powershell -ExecutionPolicy Bypass -File ./scripts/rebuild.ps1 -KyoOnly",
     "icon": "node ./scripts/update-icon.mjs",
     "icon:bloub": "node ./scripts/update-icon.mjs --bloub"
   },

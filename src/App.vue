@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { invoke } from '@tauri-apps/api/core';
@@ -7,11 +7,39 @@ import { listen } from '@tauri-apps/api/event';
 import BloubBot from './components/BloubBot.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import ContextMenu from './components/ContextMenu.vue';
+import MusicFloatingPill from './components/MusicFloatingPill.vue';
 import { settings, isDark } from './composables/useSettings';
 import { useKyoBridge } from './composables/useKyoBridge';
-import type { StateId } from './bot/states';
+import { useAvatarMovement } from './composables/useAvatarMovement';
+import { useMusicDetector } from './composables/useMusicDetector';
+import { isDanceState, type StateId } from './bot/states';
 
 const { initBridge } = useKyoBridge();
+const {
+  initMovementBridge,
+  destroyMovementBridge,
+  isMoving,
+  isDragging,
+  setDragging,
+  velocity,
+} = useAvatarMovement();
+const {
+  isMusicDetected,
+  isMusicPlaying,
+  currentDanceStateId,
+  initMusicBridge,
+  destroyMusicBridge,
+  onTrackChange,
+} = useMusicDetector();
+
+const isMusicDancing = computed(
+  () =>
+    settings.musicDetectionEnabled &&
+    settings.musicAutoDance &&
+    isMusicPlaying.value &&
+    !isDragging.value &&
+    !isMoving.value
+);
 
 const appWindow = getCurrentWindow();
 
@@ -19,18 +47,106 @@ const isSettingsOpen = ref(false);
 const isContextMenuOpen = ref(false);
 const contextMenuPos = ref({ x: 40, y: 70 });
 const botState = ref<StateId>('idle');
+const musicPillZone = ref<'bottom' | 'top' | 'none'>('none');
+
+const avatarEffectiveSize = computed(() => {
+  if (
+    settings.musicShowFloatingPill &&
+    isMusicDetected.value &&
+    musicPillZone.value !== 'none' &&
+    !isDragging.value
+  ) {
+    return Math.min(settings.avatarSize, 152);
+  }
+  return settings.avatarSize;
+});
+
+const avatarOffsetClass = computed(() => {
+  if (!settings.musicShowFloatingPill || !isMusicDetected.value || isDragging.value) {
+    return '';
+  }
+  if (musicPillZone.value === 'bottom') {
+    return '-translate-y-4';
+  }
+  if (musicPillZone.value === 'top') {
+    return 'translate-y-3.5';
+  }
+  return '';
+});
 let lastAvatarPosition: PhysicalPosition | null = null;
 let unlistenOpenSettings: (() => void) | null = null;
 let unlistenRestoreAvatar: (() => void) | null = null;
 let unlistenOpenChat: (() => void) | null = null;
 let unlistenAgentState: (() => void) | null = null;
+let unlistenTrackChange: (() => void) | null = null;
 let isOpeningChat = false;
 const botRef = ref<InstanceType<typeof BloubBot> | null>(null);
 
-function onContextMenu(e: MouseEvent) {
+function syncMusicDanceState() {
+  if (isDragging.value || isMoving.value) {
+    if (isDanceState(botState.value)) {
+      botState.value = 'idle';
+      botRef.value?.stopDanceImmediately?.();
+    }
+    return;
+  }
+
+  if (isMusicDancing.value) {
+    const targetDance = currentDanceStateId.value;
+    if (
+      botState.value === 'idle' ||
+      botState.value === 'sleep' ||
+      botState.value === 'deepsleep' ||
+      (isDanceState(botState.value) && botState.value !== targetDance)
+    ) {
+      botState.value = targetDance;
+      botRef.value?.setState?.(targetDance);
+    }
+  } else if (isDanceState(botState.value)) {
+    botState.value = 'idle';
+    botRef.value?.setState?.('idle');
+  }
+}
+
+function triggerManualDance() {
+  if (isDragging.value || isMoving.value) return;
+  const targetDance = currentDanceStateId.value;
+  botState.value = targetDance;
+  botRef.value?.setState?.(targetDance);
+  if (!isMusicDancing.value) {
+    setTimeout(() => {
+      if (isDanceState(botState.value) && !isMusicDancing.value) {
+        botState.value = 'idle';
+        botRef.value?.setState?.('idle');
+      }
+    }, 6000);
+  }
+}
+
+watch(
+  [
+    isMusicPlaying,
+    currentDanceStateId,
+    isDragging,
+    isMoving,
+    () => settings.musicAutoDance,
+    () => settings.musicDetectionEnabled,
+    () => settings.musicDanceStyle,
+  ],
+  () => {
+    syncMusicDanceState();
+  }
+);
+
+async function onContextMenu(e: MouseEvent) {
   e.preventDefault();
   if (isSettingsOpen.value) return;
-  openDioxusChat();
+  try {
+    await invoke('show_context_menu');
+  } catch (err) {
+    console.error('Error opening context menu:', err);
+    openDioxusChat();
+  }
 }
 
 function closeContextMenu() {
@@ -96,15 +212,29 @@ async function startDrag(e: MouseEvent) {
   }
   // Doble clic abre Dioxus Chat directamente
   if (e.detail === 2) {
+    setDragging(false);
     openDioxusChat();
     return;
   }
   if (e.button === 0 && !isSettingsOpen.value) {
+    // Detener baile y limpiar notas musicales antes de mover la ventana transparente
+    setDragging(true);
+    botRef.value?.stopDanceImmediately?.();
+    if (isDanceState(botState.value)) {
+      botState.value = 'idle';
+    }
     try {
       await invoke('start_avatar_drag');
     } catch (err) {
+      setDragging(false);
       console.error('Failed to drag avatar window:', err);
     }
+  }
+}
+
+function onWindowMouseUp() {
+  if (isDragging.value) {
+    setDragging(false);
   }
 }
 
@@ -136,13 +266,27 @@ let isMounted = true;
 
 onMounted(async () => {
   initBridge();
+  initMovementBridge();
+  initMusicBridge();
+  unlistenTrackChange = onTrackChange(() => {
+    if (isSettingsOpen.value || !settings.musicDetectionEnabled || isDragging.value || isMoving.value) return;
+    if (settings.musicReactOnTrackChange) {
+      botState.value = 'joy';
+      botRef.value?.setState?.('joy');
+      setTimeout(() => {
+        const next: StateId = isMusicDancing.value ? currentDanceStateId.value : 'idle';
+        botState.value = next;
+        botRef.value?.setState?.(next);
+      }, 1100);
+    }
+  });
   window.addEventListener('keydown', onGlobalKeydown);
   window.addEventListener('contextmenu', onGlobalContextMenu);
   window.addEventListener('mousedown', onWindowMouseDown);
+  window.addEventListener('mouseup', onWindowMouseUp);
 
   try {
     await appWindow.show();
-    await appWindow.setFocus();
   } catch (err) {
     console.error('Error showing appWindow in onMounted:', err);
   }
@@ -166,11 +310,14 @@ onMounted(async () => {
   listen('restore-avatar', () => {
     isSettingsOpen.value = false;
     isContextMenuOpen.value = false;
+    setDragging(false);
     botRef.value?.triggerSpawn();
     botState.value = 'greet';
     setTimeout(() => {
       if (botState.value === 'greet') {
-        botState.value = 'idle';
+        const next: StateId = isMusicDancing.value ? currentDanceStateId.value : 'idle';
+        botState.value = next;
+        botRef.value?.setState?.(next);
       }
     }, 1250);
   }).then(fn => {
@@ -182,7 +329,10 @@ onMounted(async () => {
   listen<string>('agent://state', (event) => {
     const raw = event.payload;
     if (raw && botRef.value?.setState) {
-      botRef.value.setState(raw as StateId);
+      const resolvedState: StateId =
+        raw === 'dance' ? currentDanceStateId.value : (raw as StateId);
+      botState.value = resolvedState;
+      botRef.value.setState(resolvedState);
     }
   }).then(fn => {
     if (isMounted) unlistenAgentState = fn;
@@ -191,11 +341,13 @@ onMounted(async () => {
 
   // Saludo amigable de bienvenida tras montar el avatar (D5 §2)
   setTimeout(() => {
-    if (!isSettingsOpen.value && botState.value === 'idle') {
+    if (!isSettingsOpen.value && (botState.value === 'idle' || isDanceState(botState.value))) {
       botState.value = 'greet';
       setTimeout(() => {
         if (botState.value === 'greet') {
-          botState.value = 'idle';
+          const next: StateId = isMusicDancing.value ? currentDanceStateId.value : 'idle';
+          botState.value = next;
+          botRef.value?.setState?.(next);
         }
       }, 1250);
     }
@@ -204,9 +356,13 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   isMounted = false;
+  destroyMovementBridge();
+  destroyMusicBridge();
+  unlistenTrackChange?.();
   window.removeEventListener('keydown', onGlobalKeydown);
   window.removeEventListener('contextmenu', onGlobalContextMenu);
   window.removeEventListener('mousedown', onWindowMouseDown);
+  window.removeEventListener('mouseup', onWindowMouseUp);
   unlistenOpenSettings?.();
   unlistenOpenChat?.();
   unlistenRestoreAvatar?.();
@@ -228,7 +384,8 @@ onBeforeUnmount(() => {
     <!-- Vista del Avatar -->
     <div
       v-if="!isSettingsOpen"
-      class="flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
+      class="flex items-center justify-center cursor-grab active:cursor-grabbing select-none transition-transform duration-200 ease-out"
+      :class="avatarOffsetClass"
     >
       <BloubBot
         ref="botRef"
@@ -238,7 +395,7 @@ onBeforeUnmount(() => {
         :color="settings.color"
         :shape="settings.shape"
         :expression="settings.expression"
-        :size="settings.avatarSize"
+        :size="avatarEffectiveSize"
         :follow="settings.followCursor"
         :volumetric="settings.volumetric"
         :interactive-pet="settings.interactivePet"
@@ -247,8 +404,22 @@ onBeforeUnmount(() => {
         :auto-sleep-enabled="settings.autoSleepEnabled"
         :night-inactivity-sleep-minutes="settings.nightInactivitySleepMinutes"
         :day-inactivity-sleep-minutes="settings.dayInactivitySleepMinutes"
+        :is-moving="isMoving"
+        :is-dragging="isDragging"
+        :movement-velocity="velocity"
+        :music-dancing="isMusicDancing"
+        :dance-state="currentDanceStateId"
       />
     </div>
+
+    <!-- Mini-reproductor y píldora flotante de música cuando Kyo detecta Spotify / SMTC -->
+    <MusicFloatingPill
+      v-if="!isSettingsOpen && settings.musicShowFloatingPill"
+      :dark="isDark"
+      :is-dragging="isDragging"
+      @dance="triggerManualDance"
+      @dock-change="(z) => (musicPillZone = z)"
+    />
 
     <!-- Menú Contextual con contenedor sólido y tema visual -->
     <ContextMenu

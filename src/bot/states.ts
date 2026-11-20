@@ -169,6 +169,11 @@ export type StateId =
   /** transition d'interface, pas une animation du catalogue : hors `SEQUENCE` */
   | 'swirl'
   | 'dance'
+  | 'dance-chill'
+  | 'dance-rock'
+  | 'dance-electro'
+  | 'dance-urban'
+  | 'dance-latin'
   | 'cuddle'
   | 'deepsleep'
   | 'deafen'
@@ -741,14 +746,14 @@ export const STATES: StateDef[] = [
         const n = cycleNorm(t - i * 0.5, 1.5)
         const side = i % 2 === 0 ? 1 : -1
         return {
-          x: side * (0.66 + 0.08 * Math.sin(TAU * n)),
-          y: 0.16 - 1.12 * n,
-          r: 0.1,
+          x: side * (0.62 + 0.06 * Math.sin(TAU * n)),
+          y: 0.12 - 0.88 * n,
+          r: 0.095,
           d: NOTE_GLYPH,
           rot: side * 12 + Math.sin(TAU * n) * 8,
           color: noteColors[i % noteColors.length]!,
           depth: 0.7,
-          opacity: clamp(n / 0.15) * clamp((1 - n) / 0.2)
+          opacity: clamp(n / 0.18) * clamp((1 - n) / 0.22)
         }
       })
 
@@ -761,6 +766,293 @@ export const STATES: StateDef[] = [
         eyes: [
           { w: m.eyeW, h: m.eyeH, open: 1, tilt: m.eyeTilt },
           { w: m.eyeW, h: m.eyeH, open: 1, tilt: -m.eyeTilt }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'dance-chill',
+    duration: 8,
+    morph: 0.45,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const cycleNorm = (val: number, p: number) => (((val % p) + p) % p) / p
+      const phase = cycleNorm(t, 4.0)
+      const w = TAU * phase
+      // Balanceo suave en forma de 8 (Lissajous) para Indie / Dream Pop / Lo-Fi / Chill
+      const swayX = Math.sin(w)
+      const swayY = Math.sin(2 * w)
+      const breath = Math.sin(w * 2) * 0.035
+
+      const chillColors = ['#38bdf8', '#34d399', '#a78bfa']
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const n = cycleNorm(t - i * 0.8, 2.4)
+        const side = i % 2 === 0 ? 1 : -1
+        return {
+          x: side * (0.58 + 0.07 * Math.sin(TAU * n)),
+          y: 0.08 - 0.78 * n,
+          r: 0.09,
+          d: i === 1 ? SPARKLE_GLYPH : NOTE_GLYPH,
+          rot: side * 8 + Math.sin(TAU * n) * 10,
+          color: chillColors[i % chillColors.length]!,
+          depth: 0.75,
+          opacity: clamp(n / 0.22) * clamp((1 - n) / 0.25) * 0.9
+        }
+      })
+
+      return base({
+        sil: circle(1, {
+          rot: 0.08 * swayX,
+          sx: 1 - breath * 0.6,
+          sy: 1 + breath
+        }),
+        offX: 0.075 * swayX,
+        offY: -0.03 * swayY,
+        gaze: {
+          yaw: REST_GAZE.yaw * 0.4 + 10 * swayX,
+          pitch: 6 + 5 * swayY,
+          roll: -4 + 11 * Math.sin(w - 0.25)
+        },
+        split: 16.5,
+        eyes: [
+          { w: 0.25, h: 0.17, open: 0.92, tilt: 16 },
+          { w: 0.25, h: 0.17, open: 0.92, tilt: -16 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'dance-rock',
+    duration: 8,
+    morph: 0.3,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const BEAT = 0.42
+      const cycleNorm = (val: number, p: number) => (((val % p) + p) % p) / p
+      const pBeat = cycleNorm(t, BEAT)
+      const pBar = cycleNorm(t, BEAT * 4)
+      // Headbang potente hacia adelante y arriba al ritmo de batería/guitarra
+      const bang = Math.sin(TAU * pBeat)
+      const slam = Math.exp(-Math.pow(Math.min(pBeat, 1 - pBeat) / 0.14, 2))
+      const thrash = Math.sin(TAU * pBar)
+
+      const rockColors = ['#f97316', '#ef4444', '#facc15']
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const n = cycleNorm(t - i * 0.38, 1.15)
+        const side = i % 2 === 0 ? 1 : -1
+        return {
+          x: side * (0.64 + 0.06 * Math.cos(TAU * n)),
+          y: 0.10 - 0.85 * n,
+          r: 0.1,
+          d: i === 2 ? SPARKLE_GLYPH : NOTE_GLYPH,
+          rot: side * 18 + Math.sin(TAU * n) * 14,
+          color: rockColors[i % rockColors.length]!,
+          depth: 0.85,
+          opacity: clamp(n / 0.15) * clamp((1 - n) / 0.2)
+        }
+      })
+
+      return base({
+        sil: circle(1, {
+          rot: 0.14 * thrash,
+          sx: 1 + 0.11 * slam - 0.05 * Math.max(0, bang),
+          sy: 1 - 0.12 * slam + 0.07 * Math.max(0, bang)
+        }),
+        offX: 0.065 * thrash,
+        offY: 0.055 * slam - 0.05 * Math.max(0, bang),
+        gaze: {
+          yaw: 12 * thrash,
+          pitch: 14 * bang - 18 * slam,
+          roll: 10 * thrash
+        },
+        split: 17,
+        eyes: [
+          { w: 0.24, h: 0.22, open: 1, tilt: -20 - 4 * slam },
+          { w: 0.24, h: 0.22, open: 1, tilt: 20 + 4 * slam }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'dance-electro',
+    duration: 8,
+    morph: 0.3,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const BEAT = 0.44
+      const cycleNorm = (val: number, p: number) => (((val % p) + p) % p) / p
+      const pBeat = cycleNorm(t, BEAT)
+      const pPhrase = cycleNorm(t, BEAT * 4)
+      // Pulso electrónico de bajo (staccato club pulse) + inclinación sintética
+      const kick = Math.exp(-Math.pow(Math.min(pBeat, 1 - pBeat) / 0.12, 2))
+      const stepSide = Math.sin(TAU * pPhrase)
+      const synthSnap = Math.sign(stepSide) * Math.pow(Math.abs(stepSide), 0.65)
+
+      const electroColors = ['#06b6d4', '#ec4899', '#a3e635']
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const n = cycleNorm(t - i * 0.4, 1.2)
+        const side = i % 2 === 0 ? 1 : -1
+        return {
+          x: side * (0.63 + 0.05 * Math.sin(TAU * n)),
+          y: 0.12 - 0.86 * n,
+          r: 0.095,
+          d: i === 1 ? SPARKLE_GLYPH : NOTE_GLYPH,
+          rot: side * 14 + Math.cos(TAU * n) * 12,
+          color: electroColors[i % electroColors.length]!,
+          depth: 0.85,
+          opacity: clamp(n / 0.15) * clamp((1 - n) / 0.2)
+        }
+      })
+
+      return base({
+        sil: circle(1, {
+          rot: 0.11 * synthSnap,
+          sx: 1 + 0.10 * kick,
+          sy: 1 - 0.10 * kick
+        }),
+        offX: 0.07 * synthSnap,
+        offY: -0.045 * (1 - kick) + 0.025 * kick,
+        gaze: {
+          yaw: 15 * synthSnap,
+          pitch: 8 - 10 * kick,
+          roll: -6 + 12 * synthSnap
+        },
+        split: 17.5,
+        eyes: [
+          { w: 0.22 + 0.04 * kick, h: 0.28 - 0.06 * kick, open: 1, tilt: 14 },
+          { w: 0.22 + 0.04 * kick, h: 0.28 - 0.06 * kick, open: 1, tilt: -14 }
+        ],
+        arcs: RINGS.slice(0, 2).map((s, i) => ({
+          id: `el${i}`,
+          seed: { ...s, a: 1.18, speed: 2.2 },
+          t,
+          opacity: 0.25 + 0.55 * kick
+        })),
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'dance-urban',
+    duration: 8,
+    morph: 0.35,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: false,
+    pose: (t) => {
+      const BEAT = 0.62
+      const cycleNorm = (val: number, p: number) => (((val % p) + p) % p) / p
+      const pBeat = cycleNorm(t, BEAT)
+      const pGroove = cycleNorm(t, BEAT * 2)
+      // Rebote urbano "nod & lean" con gravedad baja y estilo hip-hop / reggaetón
+      const dip = Math.sin(Math.PI * pBeat)
+      const lean = Math.sin(TAU * pGroove)
+      const nod = Math.cos(TAU * pBeat)
+
+      const urbanColors = ['#fbbf24', '#a855f7', '#10b981']
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const n = cycleNorm(t - i * 0.52, 1.56)
+        const side = i % 2 === 0 ? 1 : -1
+        return {
+          x: side * (0.62 + 0.06 * Math.sin(TAU * n)),
+          y: 0.12 - 0.84 * n,
+          r: 0.095,
+          d: NOTE_GLYPH,
+          rot: side * 10 + Math.sin(TAU * n) * 9,
+          color: urbanColors[i % urbanColors.length]!,
+          depth: 0.8,
+          opacity: clamp(n / 0.16) * clamp((1 - n) / 0.22)
+        }
+      })
+
+      return base({
+        sil: circle(1, {
+          rot: 0.12 * lean,
+          sx: 1 + 0.07 * dip,
+          sy: 1 - 0.08 * dip
+        }),
+        offX: 0.085 * lean,
+        offY: 0.055 * dip - 0.015,
+        gaze: {
+          yaw: 14 * lean,
+          pitch: 4 - 14 * dip + 4 * nod,
+          roll: -8 + 14 * lean
+        },
+        split: 17,
+        eyes: [
+          { w: 0.25, h: 0.20, open: 0.82, tilt: 12 },
+          { w: 0.25, h: 0.20, open: 0.82, tilt: -12 }
+        ],
+        dots
+      })
+    }
+  },
+
+  {
+    id: 'dance-latin',
+    duration: 8,
+    morph: 0.35,
+    baseFace: false,
+    baseBody: true,
+    blinkIn: true,
+    pose: (t) => {
+      const PHRASE = 1.1
+      const cycleNorm = (val: number, p: number) => (((val % p) + p) % p) / p
+      const p = cycleNorm(t, PHRASE)
+      const w = TAU * p
+      // Paso sincopado salsa / cumbia / bachata con cadera lateral y giro alegre
+      const salsaStep = Math.sin(w) + 0.35 * Math.sin(2 * w)
+      const hipHop = Math.abs(Math.cos(w))
+      const phrase4 = cycleNorm(t, PHRASE * 4)
+      const turnProg = clamp((phrase4 - 0.78) / 0.20)
+      const spinYaw = turnProg > 0 && turnProg < 1 ? 360 * easings.easeInOutCubic(turnProg) : 0
+
+      const latinColors = ['#fb7185', '#f59e0b', '#2dd4bf']
+      const dots: DotRender[] = [0, 1, 2].map((i) => {
+        const n = cycleNorm(t - i * 0.45, 1.35)
+        const side = i % 2 === 0 ? 1 : -1
+        return {
+          x: side * (0.61 + 0.07 * Math.sin(TAU * n)),
+          y: 0.12 - 0.85 * n,
+          r: 0.095,
+          d: i === 2 ? HEART_GLYPH : NOTE_GLYPH,
+          rot: side * 15 + Math.sin(TAU * n) * 12,
+          color: latinColors[i % latinColors.length]!,
+          depth: 0.8,
+          opacity: clamp(n / 0.16) * clamp((1 - n) / 0.22)
+        }
+      })
+
+      return base({
+        sil: circle(1, {
+          rot: -0.11 * salsaStep,
+          sx: 1 + 0.06 * hipHop - 0.04 * (1 - hipHop),
+          sy: 1 - 0.05 * hipHop + 0.06 * (1 - hipHop)
+        }),
+        offX: 0.095 * salsaStep,
+        offY: -0.05 * hipHop,
+        gaze: {
+          yaw: 12 * salsaStep + spinYaw,
+          pitch: 12 + 4 * hipHop,
+          roll: 12 * salsaStep
+        },
+        split: 17,
+        eyes: [
+          { w: 0.26, h: 0.19, open: 1, tilt: 20 },
+          { w: 0.26, h: 0.19, open: 1, tilt: -20 }
         ],
         dots
       })
@@ -1187,6 +1479,11 @@ export const POSES: Record<StateId, number> = {
   burst: 0.45,
   comet: 1.15,
   dance: 1.5,
+  'dance-chill': 1.2,
+  'dance-rock': 1.0,
+  'dance-electro': 1.1,
+  'dance-urban': 1.2,
+  'dance-latin': 1.3,
   cuddle: 0.45,
   deepsleep: 1.6,
   deafen: 1.2,
@@ -1218,6 +1515,17 @@ export const SEQUENCE: StateId[] = [
 
 const NO_FOLLOW = new Set<StateId>(['sleep', 'deepsleep', 'deafen', 'wakeup', 'cuddle'])
 
+export function isDanceState(id: StateId | string): boolean {
+  return (
+    id === 'dance' ||
+    id === 'dance-chill' ||
+    id === 'dance-rock' ||
+    id === 'dance-electro' ||
+    id === 'dance-urban' ||
+    id === 'dance-latin'
+  )
+}
+
 /**
  * Dit si le regard suit le curseur dans cet état.
  * Les états avec cara de repos (baseFace), alert, swirl et dance suivent le curseur.
@@ -1225,5 +1533,5 @@ const NO_FOLLOW = new Set<StateId>(['sleep', 'deepsleep', 'deafen', 'wakeup', 'c
 export function followsCursor(id: StateId): boolean {
   if (NO_FOLLOW.has(id)) return false
   const def = STATE_BY_ID.get(id)
-  return !!(def?.baseFace || id === 'alert' || id === 'dance' || id === 'swirl')
+  return !!(def?.baseFace || id === 'alert' || isDanceState(id) || id === 'swirl')
 }

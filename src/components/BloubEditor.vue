@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import BloubBot from './BloubBot.vue';
 import KyoIcon from './KyoIcon.vue';
 import SettingSlider from './SettingSlider.vue';
-import { settings } from '@/composables/useSettings';
+import { settings, isDark } from '@/composables/useSettings';
 import { COLORS, SHAPES, type ColorId, type ShapeId } from '@/bot/skins';
 import { EXPRESSIONS, type ExpressionId } from '@/bot/expressions';
 
@@ -75,7 +75,7 @@ const eyePresets = [
 ];
 
 /** Fondo del lienzo: el motor lo usa para la bruma de las particulas. */
-const paper = computed(() => (settings.theme === 'light' ? '#f8fafc' : '#12141a'));
+const paper = computed(() => (isDark.value ? '#12141a' : '#f8fafc'));
 
 const currentShapeLabel = computed(
   () => shapeLabels[settings.shape as ShapeId] ?? settings.shape

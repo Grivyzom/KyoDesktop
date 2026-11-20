@@ -184,6 +184,66 @@ export class BotEngine {
     this.expr = expression
   }
 
+  // Animation Engine & FPS optimization
+  private rafId: number | null = null
+  private isPaused = false
+  private lastFrameTime = 0
+  private targetFpsInterval = 1000 / 60 // Limitar a 60 FPS constantes
+  public onPhysicsUpdate?: (dt: number) => void
+
+  public initVisibilityGuard() {
+    if (typeof document === 'undefined') return
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.pause()
+      } else {
+        this.resume()
+      }
+    })
+  }
+
+  public pause() {
+    this.isPaused = true
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId)
+      this.rafId = null
+    }
+  }
+
+  public resume() {
+    if (!this.isPaused && this.rafId !== null) return
+    this.isPaused = false
+    this.lastFrameTime = performance.now()
+    this.loop(this.lastFrameTime)
+  }
+
+  public start() {
+    this.resume()
+  }
+
+  public setTargetFps(fps: number) {
+    this.targetFpsInterval = 1000 / fps
+  }
+
+  public get paused(): boolean {
+    return this.isPaused
+  }
+
+  private loop = (now: number) => {
+    if (this.isPaused) return
+    this.rafId = requestAnimationFrame(this.loop)
+
+    const elapsed = now - this.lastFrameTime
+    if (elapsed < this.targetFpsInterval) return
+    this.lastFrameTime = now - (elapsed % this.targetFpsInterval)
+
+    this.updatePhysics(elapsed / 1000)
+  }
+
+  private updatePhysics(dt: number) {
+    this.onPhysicsUpdate?.(dt)
+  }
+
   /**
    * Expression de repos choisie dans le personnalisateur. Comme la forme, elle
    * glisse vers la nouvelle valeur au lieu de sauter.

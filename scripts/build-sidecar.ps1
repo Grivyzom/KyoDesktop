@@ -1,30 +1,17 @@
-# Script para compilar el Sidecar Go con la nomenclatura de target requerida por Tauri v2 en Windows
 $ErrorActionPreference = "Stop"
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectRoot = Split-Path -Parent $scriptDir
-$sidecarDir = Join-Path $projectRoot "sidecar"
-$binariesDir = Join-Path $projectRoot "src-tauri\binaries"
+# Obtener el target triple de rustc
+$targetTriple = (rustc -Vv | Select-String "host:" | ForEach-Object { $_.ToString().Split(" ")[1].Trim() })
+$ext = if ($IsWindows -or $env:OS -match "Windows") { ".exe" } else { "" }
+$outDir = Join-Path $PSScriptRoot "..\src-tauri\binaries"
+$outFile = Join-Path $outDir "go-server-$targetTriple$ext"
 
-if (-not (Test-Path $binariesDir)) {
-    New-Item -ItemType Directory -Path $binariesDir -Force | Out-Null
+if (!(Test-Path $outDir)) {
+    New-Item -ItemType Directory -Path $outDir | Out-Null
 }
 
-$outputExe = Join-Path $binariesDir "go-server-x86_64-pc-windows-msvc.exe"
-
-Write-Host "==> Compilando Go Sidecar..." -ForegroundColor Cyan
-Write-Host "    Fuente: $sidecarDir"
-Write-Host "    Destino: $outputExe"
-
-$env:GOOS = "windows"
-$env:GOARCH = "amd64"
-$env:CGO_ENABLED = "0"
-
-Push-Location $sidecarDir
-try {
-    go build -ldflags "-s -w" -o $outputExe .
-    Write-Host "==> ¡Compilación exitosa! Binario generado:" -ForegroundColor Green
-    Get-Item $outputExe | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
-} finally {
-    Pop-Location
-}
+Write-Host "Compilando Go Sidecar para $targetTriple..."
+Push-Location (Join-Path $PSScriptRoot "..\sidecar")
+go build -ldflags="-s -w" -o $outFile main.go
+Pop-Location
+Write-Host "Sidecar compilado en: $outFile"

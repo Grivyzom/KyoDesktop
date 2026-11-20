@@ -1,31 +1,62 @@
-use std::sync::Mutex;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
 
-/// Estado administrado en Tauri para retener el puerto efímero del Sidecar Go.
-#[derive(Default)]
 pub struct SidecarState {
-    pub port: Mutex<Option<u16>>,
+    pub child: Arc<Mutex<Option<Child>>>,
+    pub port: Arc<Mutex<Option<u16>>>,
 }
 
-/// Comando IPC para que el frontend consulte el puerto actual del sidecar
+impl Default for SidecarState {
+    fn default() -> Self {
+        Self {
+            child: Arc::new(Mutex::new(None)),
+            port: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
 #[tauri::command]
-pub fn sidecar_port(state: State<SidecarState>) -> Option<u16> {
-    *state.port.lock().unwrap()
+pub fn get_sidecar_port(state: State<'_, SidecarState>) -> Result<u16, String> {
+    let port_guard = state.port.lock().map_err(|_| "Mutex poisoned")?;
+    port_guard.ok_or_else(|| "Sidecar aún no ha reportado puerto".to_string())
 }
 
-/// Helper en Rust para obtener el puerto desde cualquier parte del host Tauri
-pub fn get_sidecar_port(app: &AppHandle) -> Option<u16> {
+#[tauri::command]
+pub fn sidecar_port(state: State<'_, SidecarState>) -> Option<u16> {
+    state.port.lock().ok().and_then(|guard| *guard)
+}
+
+pub fn get_sidecar_port_from_app(app: &AppHandle) -> Option<u16> {
     if let Some(state) = app.try_state::<SidecarState>() {
-        *state.port.lock().unwrap()
+        state.port.lock().ok().and_then(|guard| *guard)
     } else {
         None
     }
 }
 
-/// Extrae el puerto de una línea como: "KYO_SIDECAR_READY port=54321 ..."
+pub fn kill_sidecar(app: &AppHandle) {
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Ok(mut child_guard) = state.child.lock() {
+            if let Some(mut child) = child_guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+/// Extrae el puerto de líneas como: "KYO_SIDECAR_PORT=54321" o "KYO_SIDECAR_READY port=54321 ..."
 fn parse_port_from_output(line: &str) -> Option<u16> {
+    if let Some(idx) = line.find("KYO_SIDECAR_PORT=") {
+        let after = &line[idx + 17..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(p) = num_str.parse::<u16>() {
+            return Some(p);
+        }
+    }
     if let Some(idx) = line.find("port=") {
         let after_port = &line[idx + 5..];
         let num_str: String = after_port
@@ -35,6 +66,48 @@ fn parse_port_from_output(line: &str) -> Option<u16> {
         return num_str.parse::<u16>().ok();
     }
     None
+}
+
+/// Localiza el binario ejecutable del Sidecar Go de forma segura y multiplataforma.
+pub fn resolve_sidecar_exe() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    let bin_name = if cfg!(windows) { "go-server.exe" } else { "go-server" };
+    let triple_bin = if cfg!(windows) {
+        "go-server-x86_64-pc-windows-msvc.exe"
+    } else {
+        "go-server-x86_64-unknown-linux-gnu"
+    };
+
+    if let Ok(cur_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = cur_exe.parent() {
+            candidates.push(exe_dir.join(bin_name));
+            candidates.push(exe_dir.join(triple_bin));
+            candidates.push(exe_dir.join("binaries").join(triple_bin));
+        }
+        let mut cur = cur_exe.clone();
+        for _ in 0..5 {
+            if cur.pop() {
+                candidates.push(cur.join(bin_name));
+                candidates.push(cur.join(triple_bin));
+                candidates.push(cur.join("sidecar").join(bin_name));
+                candidates.push(cur.join("src-tauri").join("binaries").join(triple_bin));
+                candidates.push(cur.join("binaries").join(triple_bin));
+            }
+        }
+    }
+
+    // Rutas fijas de desarrollo
+    candidates.push(std::path::PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\src-tauri\binaries\go-server-x86_64-pc-windows-msvc.exe"));
+    candidates.push(std::path::PathBuf::from(r"V:\Proyectos\Grivyzom Ideas\tauri-app\sidecar\go-server.exe"));
+
+    let mut existing: Vec<std::path::PathBuf> = candidates.into_iter().filter(|p| p.is_file()).collect();
+    existing.sort_by(|a, b| {
+        let time_b = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let time_a = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        time_b.cmp(&time_a)
+    });
+
+    existing.into_iter().next()
 }
 
 /// Inicia el subproceso Go Server y monitorea su stdout para el handshake
@@ -48,95 +121,117 @@ pub fn spawn(app: &AppHandle) {
         .map(|p| p.join("replicas").to_string_lossy().to_string())
         .unwrap_or_else(|_| "replicas".to_string());
 
-    let sidecar_cmd = match app.shell().sidecar("go-server") {
-        Ok(cmd) => cmd,
-        Err(err) => {
+    let exe = match resolve_sidecar_exe() {
+        Some(path) => path,
+        None => {
             eprintln!(
-                "[Sidecar] Advertencia: No se pudo preparar el binario go-server (¿aún no compilado?): {err}"
+                "[Sidecar] Advertencia: No se pudo preparar el binario go-server (¿aún no compilado?)"
             );
             return;
         }
     };
 
-    let sidecar_cmd = sidecar_cmd
+    let parent_dir = exe.parent().unwrap_or(Path::new("."));
+    let mut cmd = Command::new(&exe);
+    cmd.current_dir(parent_dir);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env("KYO_MODE", "local")
         .env("PORT", "0")
+        .env("KYO_PORT", "0")
         .env("KYO_UPSTREAM", "https://kyo.broco.dev")
         .env("KYO_DB_DIR", &db_dir);
 
-    tauri::async_runtime::spawn(async move {
-        match sidecar_cmd.spawn() {
-            Ok((mut rx, _child)) => {
-                println!("[Sidecar] Subproceso go-server lanzado exitosamente. Esperando handshake...");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(bytes) => {
-                            let line = String::from_utf8_lossy(&bytes);
-                            print!("[Sidecar stdout] {}", line);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("[Sidecar] Error al ejecutar el subproceso {}: {err}", exe.display());
+            return;
+        }
+    };
 
-                            if line.contains("KYO_SIDECAR_READY") || line.contains("port=") {
-                                if let Some(port) = parse_port_from_output(&line) {
-                                    println!("[Sidecar] ¡Handshake detectado! Puerto asignado: {port}");
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            eprintln!("[Sidecar] No se pudo capturar stdout del subproceso");
+            return;
+        }
+    };
 
-                                    // Guardar el puerto en el estado administrado
-                                    if let Some(state) = app_handle.try_state::<SidecarState>() {
-                                        *state.port.lock().unwrap() = Some(port);
-                                    }
+    let stderr = child.stderr.take();
 
-                                    // Emitir evento global a todas las ventanas webview de Tauri
-                                    let _ = app_handle.emit(
-                                        "sidecar://ready",
-                                        serde_json::json!({ "port": port }),
-                                    );
-                                }
-                            }
-                        }
-                        CommandEvent::Stderr(bytes) => {
-                            let err_line = String::from_utf8_lossy(&bytes);
-                            eprint!("[Sidecar stderr] {}", err_line);
-                        }
-                        CommandEvent::Error(err) => {
-                            eprintln!("[Sidecar error] Error en el subproceso: {err}");
-                        }
-                        CommandEvent::Terminated(payload) => {
-                            println!(
-                                "[Sidecar] Subproceso go-server finalizó con código: {:?}",
-                                payload.code
-                            );
-                            if let Some(state) = app_handle.try_state::<SidecarState>() {
-                                *state.port.lock().unwrap() = None;
-                            }
-                            let _ = app_handle.emit("sidecar://terminated", ());
+    // Guardar la referencia del proceso hijo en el estado de Tauri
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Ok(mut lock) = state.child.lock() {
+            *lock = Some(child);
+        }
+    }
 
-                            // Reinicio automático con backoff exponencial (max 3 intentos)
-                            if let Some(code) = payload.code {
-                                if code != 0 {
-                                    static RESTART_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                                    let count = RESTART_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if count < 3 {
-                                        let delay = std::time::Duration::from_secs(2u64.pow(count));
-                                        eprintln!("[Sidecar] Reintentando en {:?} (intento {}/3)...", delay, count + 1);
-                                        let app_clone = app_handle.clone();
-                                        std::thread::spawn(move || {
-                                            std::thread::sleep(delay);
-                                            spawn(&app_clone);
-                                        });
-                                    } else {
-                                        eprintln!("[Sidecar] Máximo de reintentos alcanzado (3/3). No se reintentará.");
-                                    }
-                                }
-                            }
+    println!("[Sidecar] Subproceso go-server lanzado exitosamente. Esperando handshake...");
 
-                            break;
-                        }
-                        _ => {}
-                    }
+    // Hilo para leer stderr del sidecar
+    if let Some(stderr) = stderr {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    eprintln!("[Sidecar stderr] {l}");
                 }
             }
-            Err(err) => {
-                eprintln!("[Sidecar] Error al ejecutar el subproceso go-server: {err}");
+        });
+    }
+
+    // Hilo para leer stdout y procesar el handshake
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    print!("[Sidecar stdout] {}\n", line);
+
+                    if line.contains("KYO_SIDECAR_READY")
+                        || line.contains("port=")
+                        || line.contains("KYO_SIDECAR_PORT=")
+                    {
+                        if let Some(port) = parse_port_from_output(&line) {
+                            println!("[Sidecar] ¡Handshake detectado! Puerto asignado: {port}");
+
+                            // Guardar el puerto en el estado administrado
+                            if let Some(state) = app_handle.try_state::<SidecarState>() {
+                                if let Ok(mut port_lock) = state.port.lock() {
+                                    *port_lock = Some(port);
+                                }
+                            }
+
+                            // Emitir evento global a todas las ventanas webview de Tauri
+                            let _ = app_handle.emit(
+                                "sidecar://ready",
+                                serde_json::json!({ "port": port }),
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[Sidecar stdout error] {err}");
+                    break;
+                }
             }
         }
+
+        // Si el stream de stdout termina, limpiar el puerto y emitir terminated
+        if let Some(state) = app_handle.try_state::<SidecarState>() {
+            if let Ok(mut port_lock) = state.port.lock() {
+                *port_lock = None;
+            }
+        }
+        let _ = app_handle.emit("sidecar://terminated", ());
     });
 }

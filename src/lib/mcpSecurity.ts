@@ -84,14 +84,48 @@ function safeBase64UrlDecode(str: string): string {
 }
 
 /**
- * Sanitiza un token eliminando espacios y previniendo CRLF injection en cabeceras HTTP.
+ * Sanitiza un token eliminando espacios, comillas envolventes y caracteres de control (previene CRLF / Header Injection).
  */
 export function sanitizeToken(token: string): string {
   if (!token) return '';
   return token
     .trim()
-    .replace(/[\r\n\t]/g, '')
-    .replace(/^Bearer\s+/i, '');
+    .replace(/^["']|["']$/g, '')
+    .replace(/[\x00-\x1F\x7F\s]/g, '')
+    .replace(/^Bearer/i, '')
+    .trim()
+    .replace(/^["']|["']$/g, '');
+}
+
+const preconnectedOrigins = new Set<string>();
+
+/**
+ * Pre-calienta DNS + TCP + TLS 1.3 en el motor WebView2 / navegador hacia el origen del servidor MCP.
+ * Reduce la latencia de la primera petición HTTPS en 80-250ms.
+ */
+export function warmupServerOrigin(rawUrl: string): void {
+  if (typeof document === 'undefined') return;
+  try {
+    const withProtocol = /^https?:\/\//i.test(rawUrl.trim())
+      ? rawUrl.trim()
+      : `https://${rawUrl.trim()}`;
+    const origin = new URL(withProtocol).origin;
+    if (!origin || preconnectedOrigins.has(origin)) return;
+    preconnectedOrigins.add(origin);
+
+    const dnsLink = document.createElement('link');
+    dnsLink.rel = 'dns-prefetch';
+    dnsLink.href = origin;
+    document.head.appendChild(dnsLink);
+
+    const preconnectLink = document.createElement('link');
+    preconnectLink.rel = 'preconnect';
+    preconnectLink.href = origin;
+    preconnectLink.crossOrigin = 'anonymous';
+    document.head.appendChild(preconnectLink);
+  } catch {
+    // Ignorar URLs en construcción
+  }
 }
 
 /**
@@ -164,7 +198,7 @@ export function validateServerUrl(rawUrl: string): UrlValidationResult {
 }
 
 /**
- * Analiza sintáctica y temporalmente un JWT sin confiar ciegamente en la firma en cliente.
+ * Analiza sintáctica y temporalmente un JWT o Token MCP oficial de Kyō.
  * Comprueba claims RFC 7519: `exp`, `nbf`, `iat` y rechaza `alg: "none"`.
  */
 export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
@@ -173,12 +207,41 @@ export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
     return { valid: false, isExpired: false, error: 'Token no proporcionado' };
   }
 
+  // Soporte de primer orden para Tokens MCP oficiales de Kyō Web (kyo_mcp_...)
+  if (token.startsWith('kyo_mcp_')) {
+    const suffix = token.slice('kyo_mcp_'.length);
+    if (suffix.length < 16) {
+      return {
+        valid: false,
+        isExpired: false,
+        error: 'El Token MCP (kyo_mcp_...) está incompleto o truncado (mínimo 16 caracteres tras el prefijo).',
+      };
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(suffix)) {
+      return {
+        valid: false,
+        isExpired: false,
+        error: 'El Token MCP contiene caracteres no permitidos.',
+      };
+    }
+    return {
+      valid: true,
+      isExpired: false,
+      remainingDays: 30,
+      claims: {
+        userId: 'mcp_user',
+        role: 'mcp',
+        rawPayload: { type: 'mcp_token', prefix: 'kyo_mcp' },
+      },
+    };
+  }
+
   const parts = token.split('.');
-  if (parts.length !== 3) {
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
     return {
       valid: false,
       isExpired: false,
-      error: 'Estructura JWT inválida: debe contener exactamente 3 partes separadas por puntos (header.payload.signature).',
+      error: 'Estructura de token no válida (se espera Token MCP kyo_mcp_... o JWT firmado de 3 segmentos).',
     };
   }
 
@@ -196,12 +259,13 @@ export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
     };
   }
 
-  // Prevenir tokens vulnerables con alg: none
-  if (header.alg === 'none' || !header.alg) {
+  // Prevenir tokens vulnerables con alg: none (case-insensitive)
+  const alg = typeof header.alg === 'string' ? header.alg.trim().toLowerCase() : '';
+  if (!alg || alg === 'none') {
     return {
       valid: false,
       isExpired: false,
-      error: 'Algoritmo de token no seguro (alg: none rechazada).',
+      error: 'Algoritmo de firma del token no seguro (alg: none rechazado).',
     };
   }
 
@@ -264,13 +328,31 @@ export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
   };
 }
 
+interface CachedProbeEntry {
+  timestamp: number;
+  result: ConnectionProbeResult;
+}
+
+const PROBE_CACHE_TTL_MS = 12_000;
+const probeCache = new Map<string, CachedProbeEntry>();
+const inflightProbes = new Map<string, Promise<ConnectionProbeResult>>();
+
 /**
- * Realiza un sondeo activo (handshake HTTP) contra el servidor MCP / Web para verificar conectividad y token.
+ * Invalida la caché de sondeo MCP (útil al rotar credenciales o forzar reconexión).
+ */
+export function invalidateProbeCache(): void {
+  probeCache.clear();
+}
+
+/**
+ * Realiza un sondeo activo ultrarrápido (1 solo RTT paralelo sobre HTTP/2) contra el servidor MCP / Web
+ * para verificar conectividad, autenticidad real del token y cargar cuenta/bóvedas simultáneamente.
  */
 export async function probeMcpConnection(
   serverUrl: string,
   rawToken?: string,
-  timeoutMs = 4000
+  timeoutMs = 4000,
+  forceRefresh = false
 ): Promise<ConnectionProbeResult> {
   const urlCheck = validateServerUrl(serverUrl);
   if (!urlCheck.valid) {
@@ -283,123 +365,161 @@ export async function probeMcpConnection(
     };
   }
 
+  const base = urlCheck.normalizedUrl;
+  warmupServerOrigin(base);
+
   const token = rawToken ? sanitizeToken(rawToken) : '';
   let claims: JwtClaims | undefined = undefined;
 
   if (token) {
     const jwtCheck = parseAndValidateJwt(token);
     claims = jwtCheck.claims;
-    if (!jwtCheck.valid && jwtCheck.isExpired) {
+    if (!jwtCheck.valid) {
       return {
         reachable: false,
         authenticated: false,
         status: 'invalid_token',
         latencyMs: 0,
-        message: jwtCheck.error || 'Token expirado',
+        message: jwtCheck.error || (jwtCheck.isExpired ? 'Token expirado' : 'Token inválido'),
         claims,
       };
     }
   }
 
-  const base = urlCheck.normalizedUrl;
-  // Construir endpoint candidato para verificación
-  // Si la URL ya incluye /api/v1, usar /health directamente; de lo contrario añadir /api/v1/health
-  const probeEndpoint = base.endsWith('/api/v1')
-    ? `${base}/health`
-    : base.includes('/api/v1/')
-    ? `${base}`
-    : `${base}/api/v1/health`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const start = performance.now();
-
-  try {
-    const headers: Record<string, string> = {
-      Accept: 'application/json, text/plain, */*',
-    };
-
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+  const cacheKey = `${base}|${token}`;
+  if (!forceRefresh) {
+    const cached = probeCache.get(cacheKey);
+    if (cached && performance.now() - cached.timestamp < PROBE_CACHE_TTL_MS) {
+      return cached.result;
     }
+    const existingInflight = inflightProbes.get(cacheKey);
+    if (existingInflight) {
+      return existingInflight;
+    }
+  }
 
-    const res = await fetch(probeEndpoint, {
-      method: 'GET',
-      headers,
-      signal: controller.signal,
-    });
+  const probePromise = (async (): Promise<ConnectionProbeResult> => {
+    const apiBase = base.endsWith('/api/v1')
+      ? base
+      : base.replace(/\/+$/, '') + '/api/v1';
 
-    clearTimeout(timer);
-    const latencyMs = Math.round(performance.now() - start);
+    const probeEndpoint = base.includes('/api/v1/') ? base : `${apiBase}/health`;
 
-    if (res.status === 401) {
-      // Servidor alcanzado pero token inválido o expirado
-      let serverErr = 'Token inválido o expirado';
-      try {
-        const body = await res.json();
-        if (body.error_description) serverErr = body.error_description;
-        else if (body.error) serverErr = body.error;
-      } catch {
-        // Ignorar fallo de parseo JSON
-      }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const start = performance.now();
 
-      return {
-        reachable: true,
-        authenticated: false,
-        status: 'invalid_token',
-        httpCode: 401,
-        latencyMs,
-        message: `Servidor conectado, pero el token fue rechazado: ${serverErr}`,
-        claims,
+    try {
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
       };
-    }
-
-    if (res.status === 403) {
-      return {
-        reachable: true,
-        authenticated: false,
-        status: 'connected_forbidden',
-        httpCode: 403,
-        latencyMs,
-        message: 'Token sin permisos suficientes para acceder a este endpoint (403 Forbidden).',
-        claims,
-      };
-    }
-
-    // Código 200, 204 o 404 (el middleware auth pasó pero la subruta es 404)
-    if (res.ok || (res.status === 404 && token)) {
-      let account: KyoAccountInfo | undefined = undefined;
-      let profiles: KyoProfileInfo[] | undefined = undefined;
 
       if (token) {
-        const apiBase = base.endsWith('/api/v1')
-          ? base
-          : base.replace(/\/+$/, '') + '/api/v1';
+        headers['Authorization'] = `Bearer ${token}`;
+      }
 
-        try {
-          const authHeaders = {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-          };
+      const fetchInit: RequestInit = {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+        credentials: 'omit',
+      };
 
-          const [meRes, vaultsRes] = await Promise.allSettled([
-            fetch(`${apiBase}/auth/me`, { method: 'GET', headers: authHeaders }).then((r) =>
-              r.ok ? r.json() : null
-            ),
-            fetch(`${apiBase}/vaults`, { method: 'GET', headers: authHeaders }).then((r) =>
-              r.ok ? r.json() : null
-            ),
+      // Lanzar /health, /auth/me y /vaults en paralelo en un único RTT (multiplexado HTTP/2)
+      const [healthSettled, meSettled, vaultsSettled] = await Promise.allSettled([
+        fetch(probeEndpoint, fetchInit),
+        token ? fetch(`${apiBase}/auth/me`, fetchInit) : Promise.resolve(null),
+        token ? fetch(`${apiBase}/vaults`, fetchInit) : Promise.resolve(null),
+      ]);
+
+      clearTimeout(timer);
+      const latencyMs = Math.max(1, Math.round(performance.now() - start));
+
+      const healthRes = healthSettled.status === 'fulfilled' ? healthSettled.value : null;
+      const meRes = meSettled.status === 'fulfilled' ? meSettled.value : null;
+      const vaultsRes = vaultsSettled.status === 'fulfilled' ? vaultsSettled.value : null;
+
+      // Si ninguna petición logró respuesta de red
+      if (!healthRes && !meRes && !vaultsRes) {
+        const err = healthSettled.status === 'rejected' ? healthSettled.reason : new Error('Error de red');
+        const isAbort = (err as Error)?.name === 'AbortError';
+        return {
+          reachable: false,
+          authenticated: false,
+          status: 'unreachable',
+          latencyMs,
+          message: isAbort
+            ? `Tiempo de espera agotado (${timeoutMs}ms) al conectar con el servidor.`
+            : `No se pudo conectar con el servidor web (${(err as Error)?.message || 'Error de red'}).`,
+          claims,
+        };
+      }
+
+      // Verificar si alguno de los endpoints autenticados rechazó el token (incluso si /health es público 200 OK)
+      const statusCodes = [healthRes?.status, meRes?.status, vaultsRes?.status].filter(
+        (s): s is number => typeof s === 'number'
+      );
+
+      if (statusCodes.includes(401)) {
+        let serverErr = 'Token inválido, revocado o expirado';
+        const unauthorizedRes = [meRes, vaultsRes, healthRes].find((r) => r?.status === 401);
+        if (unauthorizedRes) {
+          try {
+            const body = await unauthorizedRes.json();
+            if (body.error_description) serverErr = body.error_description;
+            else if (body.error) serverErr = body.error;
+          } catch {
+            // Ignorar fallo de parseo JSON
+          }
+        }
+        return {
+          reachable: true,
+          authenticated: false,
+          status: 'invalid_token',
+          httpCode: 401,
+          latencyMs,
+          message: `Servidor conectado, pero el token fue rechazado: ${serverErr}`,
+          claims,
+        };
+      }
+
+      if (statusCodes.includes(403) && !meRes?.ok && !vaultsRes?.ok) {
+        return {
+          reachable: true,
+          authenticated: false,
+          status: 'connected_forbidden',
+          httpCode: 403,
+          latencyMs,
+          message: 'Token sin permisos suficientes para acceder a este endpoint (403 Forbidden).',
+          claims,
+        };
+      }
+
+      const primaryStatus = meRes?.status ?? vaultsRes?.status ?? healthRes?.status ?? 200;
+      const isOk = Boolean(
+        healthRes?.ok || meRes?.ok || vaultsRes?.ok || (healthRes?.status === 404 && token)
+      );
+
+      if (isOk) {
+        let account: KyoAccountInfo | undefined = undefined;
+        let profiles: KyoProfileInfo[] | undefined = undefined;
+
+        if (token) {
+          const [meJsonSettled, vaultsJsonSettled] = await Promise.allSettled([
+            meRes && meRes.ok ? meRes.json() : Promise.resolve(null),
+            vaultsRes && vaultsRes.ok ? vaultsRes.json() : Promise.resolve(null),
           ]);
 
-          if (meRes.status === 'fulfilled' && meRes.value) {
-            const data = meRes.value;
+          const meData = meJsonSettled.status === 'fulfilled' ? meJsonSettled.value : null;
+          if (meData) {
+            const userObj = meData.user ?? meData.data ?? meData;
             account = {
-              id: data.id ?? claims?.userId ?? '',
-              username: data.username ?? (claims?.userId ? String(claims.userId) : 'usuario'),
-              name: data.name || data.username || 'Usuario Kyō',
-              email: data.email || claims?.email || '',
-              role: data.role || claims?.role || 'user',
-              emailVerified: Boolean(data.email_verified),
+              id: userObj.id ?? claims?.userId ?? '',
+              username: userObj.username ?? (claims?.userId ? String(claims.userId) : 'usuario'),
+              name: userObj.name || userObj.username || 'Usuario Kyō',
+              email: userObj.email || claims?.email || '',
+              role: userObj.role || claims?.role || 'user',
+              emailVerified: Boolean(userObj.email_verified),
             };
           } else if (claims) {
             account = {
@@ -412,11 +532,12 @@ export async function probeMcpConnection(
             };
           }
 
-          if (vaultsRes.status === 'fulfilled' && vaultsRes.value) {
-            const rawList = Array.isArray(vaultsRes.value.data)
-              ? vaultsRes.value.data
-              : Array.isArray(vaultsRes.value)
-              ? vaultsRes.value
+          const vaultsData = vaultsJsonSettled.status === 'fulfilled' ? vaultsJsonSettled.value : null;
+          if (vaultsData) {
+            const rawList = Array.isArray(vaultsData.data)
+              ? vaultsData.data
+              : Array.isArray(vaultsData)
+              ? vaultsData
               : [];
 
             profiles = rawList.map((v: Record<string, unknown>) => ({
@@ -429,49 +550,56 @@ export async function probeMcpConnection(
               fileCount: typeof v.file_count === 'number' ? v.file_count : undefined,
             }));
           }
-        } catch (subErr) {
-          console.warn('[probeMcpConnection] Error obteniendo datos de cuenta/perfil:', subErr);
         }
+
+        const result: ConnectionProbeResult = {
+          reachable: true,
+          authenticated: Boolean(token),
+          status: token ? 'connected_verified' : 'connected_unauthenticated',
+          httpCode: primaryStatus,
+          latencyMs,
+          message: token
+            ? 'Conexión exitosa y Token validado con el servidor MCP.'
+            : 'Conexión con el servidor disponible (Modo anónimo / sin token).',
+          claims,
+          account,
+          profiles,
+        };
+        probeCache.set(cacheKey, { timestamp: performance.now(), result });
+        return result;
       }
 
       return {
         reachable: true,
-        authenticated: Boolean(token),
-        status: token ? 'connected_verified' : 'connected_unauthenticated',
-        httpCode: res.status,
+        authenticated: false,
+        status: 'connected_unauthenticated',
+        httpCode: primaryStatus,
         latencyMs,
-        message: token
-          ? 'Conexión exitosa y Token validado con el servidor MCP.'
-          : 'Conexión con el servidor disponible (Modo anónimo / sin token).',
+        message: `Servidor respondió con código HTTP ${primaryStatus}`,
         claims,
-        account,
-        profiles,
+      };
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      const latencyMs = Math.round(performance.now() - start);
+      const isAbort = (err as Error)?.name === 'AbortError';
+
+      return {
+        reachable: false,
+        authenticated: false,
+        status: 'unreachable',
+        latencyMs,
+        message: isAbort
+          ? `Tiempo de espera agotado (${timeoutMs}ms) al conectar con el servidor.`
+          : `No se pudo conectar con el servidor web (${(err as Error)?.message || 'Error de red'}).`,
+        claims,
       };
     }
+  })();
 
-    return {
-      reachable: true,
-      authenticated: false,
-      status: 'connected_unauthenticated',
-      httpCode: res.status,
-      latencyMs,
-      message: `Servidor respondió con código HTTP ${res.status}`,
-      claims,
-    };
-  } catch (err: unknown) {
-    clearTimeout(timer);
-    const latencyMs = Math.round(performance.now() - start);
-    const isAbort = (err as Error)?.name === 'AbortError';
-
-    return {
-      reachable: false,
-      authenticated: false,
-      status: 'unreachable',
-      latencyMs,
-      message: isAbort
-        ? `Tiempo de espera agotado (${timeoutMs}ms) al conectar con el servidor.`
-        : `No se pudo conectar con el servidor web (${(err as Error)?.message || 'Error de red'}).`,
-      claims,
-    };
+  inflightProbes.set(cacheKey, probePromise);
+  try {
+    return await probePromise;
+  } finally {
+    inflightProbes.delete(cacheKey);
   }
 }

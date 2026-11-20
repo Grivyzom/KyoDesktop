@@ -13,13 +13,14 @@ use dioxus::prelude::*;
 use crate::models::ActiveView;
 use crate::settings::{
     analyze_token, clear_session_auth, load_auth_token, load_server_url,
-    save_full_session_config,
+    save_full_session_config, sanitize_token, shared_probe_client, validate_token_security,
 };
 use crate::sidecar::{SidecarConnectionStatus, SidecarState};
 
 const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 
 pub(crate) const KYO_WEB_URL: &str = "https://kyo.broco.dev";
+pub(crate) const KYO_MCP_URL: &str = "https://kyo.broco.dev/mcp";
 
 // ── Iconos (trazos estilo Lucide, un único `path`) ──────────────────────────
 pub(crate) const ICON_CHECK: &str = "M20 6L9 17l-5-5";
@@ -94,8 +95,13 @@ pub struct ConnectedAccountInfo {
 }
 
 impl ConnectedAccountInfo {
-    /// Bóveda principal: la primera bóveda devuelta por el servidor.
+    /// Bóveda principal: la bóveda que coincide con primary_vault o la primera devuelta por el servidor.
     pub fn primary_vault_resource(&self) -> Option<CloudResource> {
+        if let Some(ref target) = self.primary_vault {
+            if let Some(matched) = self.vaults.iter().find(|v| v.name.eq_ignore_ascii_case(target) || v.id == *target) {
+                return Some(matched.clone());
+            }
+        }
         self.vaults.first().cloned().or_else(|| {
             self.primary_vault.clone().map(|name| CloudResource {
                 id: name.clone(),
@@ -222,7 +228,8 @@ fn parse_total(json: &serde_json::Value) -> Option<usize> {
         .or_else(|| json.get("data").and_then(|d| d.as_array()).map(|a| a.len()))
 }
 
-/// Realiza una sonda HTTP al backend de Kyō para validar credenciales y medir latencia.
+/// Realiza una sonda HTTP paralela de alta velocidad al backend de Kyō para validar credenciales,
+/// medir latencia RTT y sincronizar espacios, bóvedas e identidad en un único round-trip (HTTP/2 Pool).
 pub async fn probe_kyo_backend(
     server_url: &str,
     token: &str,
@@ -230,6 +237,18 @@ pub async fn probe_kyo_backend(
     let clean_url = server_url.trim().trim_end_matches('/').to_string();
     if clean_url.is_empty() {
         return Err(("La URL del servidor no puede estar vacía.".to_string(), false, None));
+    }
+
+    // Bloquear credenciales embebidas en la URL (user:pass@host)
+    if let Some(after_scheme) = clean_url.split("://").nth(1) {
+        let authority = after_scheme.split('/').next().unwrap_or("");
+        if authority.contains('@') {
+            return Err((
+                "Por seguridad, no se permiten credenciales embebidas en la URL del servidor.".to_string(),
+                false,
+                None,
+            ));
+        }
     }
 
     // Validación de protocolo seguro para evitar transmisión de token en texto plano
@@ -252,22 +271,13 @@ pub async fn probe_kyo_backend(
         ));
     }
 
-    let trimmed_token = token.trim().to_string();
-    if trimmed_token.is_empty() {
-        return Err((
-            "No se ha ingresado ningún Token Key. Ingrese su token para conectar.".to_string(),
-            true,
-            None,
-        ));
-    }
-
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(4500))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return Err((format!("Error inicializando cliente HTTP: {e}"), false, None)),
+    // Validación criptográfica y estructural local en 0ms antes de usar la red
+    let trimmed_token = match validate_token_security(token) {
+        Ok(t) => t,
+        Err(msg) => return Err((msg, true, None)),
     };
+
+    let client = shared_probe_client();
 
     let api_base = if clean_url.ends_with("/api/v1") {
         clean_url.clone()
@@ -275,14 +285,36 @@ pub async fn probe_kyo_backend(
         format!("{clean_url}/api/v1")
     };
     let spaces_url = format!("{api_base}/spaces");
+    let vaults_url = format!("{api_base}/vaults");
+    let me_url = format!("{api_base}/auth/me");
+    let auth_header = format!("Bearer {trimmed_token}");
 
+    // Ejecutar las 3 consultas simultáneamente sobre el pool HTTP/2 (1 RTT en vez de 3 RTT secuenciales)
     let start = std::time::Instant::now();
-    let res = match client
-        .get(&spaces_url)
-        .header("Authorization", format!("Bearer {trimmed_token}"))
-        .send()
-        .await
-    {
+    let spaces_fut = async {
+        let r = client
+            .get(&spaces_url)
+            .header("Authorization", &auth_header)
+            .header("Accept", "application/json")
+            .send()
+            .await;
+        let rtt = start.elapsed().as_millis() as u64;
+        (r, rtt)
+    };
+    let vaults_fut = client
+        .get(&vaults_url)
+        .header("Authorization", &auth_header)
+        .header("Accept", "application/json")
+        .send();
+    let me_fut = client
+        .get(&me_url)
+        .header("Authorization", &auth_header)
+        .header("Accept", "application/json")
+        .send();
+
+    let ((spaces_res, latency_ms), vaults_res, me_res) = tokio::join!(spaces_fut, vaults_fut, me_fut);
+
+    let res = match spaces_res {
         Ok(r) => r,
         Err(e) => {
             return Err((
@@ -293,15 +325,22 @@ pub async fn probe_kyo_backend(
         }
     };
 
-    let latency_ms = start.elapsed().as_millis() as u64;
     let status_code = res.status().as_u16();
 
     if res.status() == reqwest::StatusCode::UNAUTHORIZED || res.status() == reqwest::StatusCode::FORBIDDEN {
-        return Err((
-            "Token de autenticación rechazado (HTTP 401 Unauthorized). Verifique que el Token Key sea válido y no haya expirado.".to_string(),
-            true,
-            Some(status_code),
-        ));
+        let server_desc = if let Ok(err_body) = res.json::<serde_json::Value>().await {
+            err_body.get("error_description")
+                .or_else(|| err_body.get("error"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let detail = match server_desc {
+            Some(d) => format!("{d}. Si generaste un nuevo token en kyo.broco.dev, el token guardado en el equipo fue revocado. Actualiza tu Token Key pegando el actual."),
+            None => "Token de autenticación rechazado (HTTP 401 Unauthorized). Verifique que el Token Key sea el actual y no haya expirado.".to_string(),
+        };
+        return Err((detail, true, Some(status_code)));
     }
 
     if !res.status().is_success() {
@@ -312,46 +351,71 @@ pub async fn probe_kyo_backend(
         ));
     }
 
-    // Procesar la respuesta JSON de espacios
+    // Procesar en paralelo la decodificación de respuestas ya recibidas
     let spaces_json: serde_json::Value = res.json().await.unwrap_or_default();
     let spaces_count = parse_total(&spaces_json);
     let spaces = parse_resources(&spaces_json, CloudResourceKind::Space);
 
     let mut user_id: Option<i64> = None;
     let mut username: Option<String> = None;
+    let mut email: Option<String> = None;
+    let mut role: Option<String> = None;
 
-    if let Some(arr) = spaces_json.get("data").and_then(|d| d.as_array()) {
-        for item in arr {
-            if let Some(last_edit) = item.get("last_edit") {
-                if user_id.is_none() {
-                    user_id = last_edit.get("by_id").and_then(|id| id.as_i64());
-                }
-                if username.is_none() {
-                    if let Some(uname) = last_edit.get("by_name").and_then(|n| n.as_str()) {
-                        let tu = uname.trim();
-                        if !tu.is_empty() {
-                            username = Some(tu.to_string());
-                        }
-                    }
-                }
-            }
-            if user_id.is_some() && username.is_some() {
-                break;
+    // 1. Extraer identidad autoritativa desde /api/v1/auth/me si estuvo disponible
+    if let Ok(m_res) = me_res {
+        if m_res.status().is_success() {
+            if let Ok(me_json) = m_res.json::<serde_json::Value>().await {
+                let obj = me_json.get("user").or_else(|| me_json.get("data")).unwrap_or(&me_json);
+                user_id = obj.get("id").and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+                username = obj
+                    .get("username")
+                    .or_else(|| obj.get("name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                email = obj
+                    .get("email")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                role = obj
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
             }
         }
     }
 
-    // Consultar bóvedas si es posible
-    let vaults_url = format!("{api_base}/vaults");
+    // 2. Fallback desde metadatos de espacios si /auth/me no devolvió usuario
+    if user_id.is_none() || username.is_none() {
+        if let Some(arr) = spaces_json.get("data").and_then(|d| d.as_array()) {
+            for item in arr {
+                if let Some(last_edit) = item.get("last_edit") {
+                    if user_id.is_none() {
+                        user_id = last_edit.get("by_id").and_then(|id| id.as_i64());
+                    }
+                    if username.is_none() {
+                        if let Some(uname) = last_edit.get("by_name").and_then(|n| n.as_str()) {
+                            let tu = uname.trim();
+                            if !tu.is_empty() {
+                                username = Some(tu.to_string());
+                            }
+                        }
+                    }
+                }
+                if user_id.is_some() && username.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
+    // 3. Procesar bóvedas desde la respuesta concurrente
     let mut vaults_count: Option<usize> = None;
     let mut vaults: Vec<CloudResource> = Vec::new();
 
-    if let Ok(v_res) = client
-        .get(&vaults_url)
-        .header("Authorization", format!("Bearer {trimmed_token}"))
-        .send()
-        .await
-    {
+    if let Ok(v_res) = vaults_res {
         if v_res.status().is_success() {
             if let Ok(v_json) = v_res.json::<serde_json::Value>().await {
                 vaults_count = parse_total(&v_json);
@@ -359,16 +423,27 @@ pub async fn probe_kyo_backend(
             }
         }
     }
-    let primary_vault = vaults.first().map(|v| v.name.clone());
 
-    // Análisis estático del JWT para claims adicionales
+    let primary_vault = crate::settings::load_active_profile_name()
+        .or_else(|| vaults.first().map(|v| v.name.clone()));
+    let primary_vault_id = vaults
+        .iter()
+        .find(|v| Some(&v.name) == primary_vault.as_ref())
+        .or_else(|| vaults.first())
+        .map(|v| v.id.clone());
+
+    // 4. Análisis estático del JWT o Token MCP para claims adicionales
     let jwt_data = analyze_token(&trimmed_token);
-    let mut role: Option<String> = None;
     if let Some(ref j) = jwt_data {
-        role = j.role.clone();
+        if role.is_none() {
+            role = j.role.clone();
+        }
         if username.is_none() {
             username = j.sub.clone();
         }
+    }
+    if trimmed_token.starts_with("kyo_mcp_") && role.is_none() {
+        role = Some("mcp".to_string());
     }
 
     if username.is_none() {
@@ -386,14 +461,14 @@ pub async fn probe_kyo_backend(
         vaults,
     };
 
-    // Guardar en sesión local de Windows (%APPDATA%/kyo/session.json)
+    // Guardar en sesión local de Windows cifrada con DPAPI (%APPDATA%/kyo/session.json)
     let _ = save_full_session_config(
         &trimmed_token,
         &clean_url,
         username.as_deref(),
-        None,
+        email.as_deref(),
         primary_vault.as_deref(),
-        None,
+        primary_vault_id.as_deref(),
     );
 
     Ok((latency_ms, account))
@@ -423,7 +498,8 @@ pub fn Dashboard() -> Element {
         let raw_token = token_input.peek().clone();
         let raw_url = server_url_input.peek().clone();
 
-        if raw_token.trim().is_empty() {
+        let clean_token = sanitize_token(&raw_token);
+        if clean_token.is_empty() {
             last_error_msg.set(Some("Por favor ingrese un Token Key antes de conectar.".to_string()));
             connection_status.set(ConnectionStatus::Disconnected);
             return;
@@ -441,10 +517,12 @@ pub fn Dashboard() -> Element {
         let mut flash_sig = flash_msg;
         let sc_opt = sidecar_state;
         let explicit = success_msg.is_some();
+        let mut t_input = token_input;
 
         spawn(async move {
-            let ok = match probe_kyo_backend(&raw_url, &raw_token).await {
+            let ok = match probe_kyo_backend(&raw_url, &clean_token).await {
                 Ok((lat, acc)) => {
+                    t_input.set(clean_token.clone());
                     conn_sig.set(ConnectionStatus::Connected {
                         latency_ms: lat,
                         server_url: raw_url.clone(),
@@ -771,20 +849,26 @@ pub fn Dashboard() -> Element {
                                             if has_vault {
                                                 div {
                                                     class: "dk-vault-actions",
-                                                    button {
-                                                        class: if explorer_open { "dk-btn dk-btn-secondary is-active" } else { "dk-btn dk-btn-secondary" },
-                                                        onclick: move |_| {
-                                                            let cur = *show_vault_explorer.read();
-                                                            show_vault_explorer.set(!cur);
-                                                        },
-                                                        Icon { d: ICON_FOLDER }
-                                                        if explorer_open { "Cerrar explorador" } else { "Abrir Bóveda en Escritorio" }
-                                                    }
                                                     {
                                                         let target = shown_vault.clone();
                                                         rsx! {
                                                             button {
                                                                 class: "dk-btn dk-btn-primary",
+                                                                title: "Explorar archivos, carpetas y contenido de esta bóveda en el escritorio",
+                                                                onclick: move |_| {
+                                                                    active_context.set(target.clone());
+                                                                    active_view.set(ActiveView::Vault);
+                                                                },
+                                                                Icon { d: ICON_FOLDER }
+                                                                "Ver contenido de Bóveda"
+                                                            }
+                                                        }
+                                                    }
+                                                    {
+                                                        let target = shown_vault.clone();
+                                                        rsx! {
+                                                            button {
+                                                                class: "dk-btn dk-btn-secondary",
                                                                 onclick: move |_| {
                                                                     active_context.set(target.clone());
                                                                     active_view.set(ActiveView::Chat);
@@ -793,6 +877,15 @@ pub fn Dashboard() -> Element {
                                                                 "Usar en Nuevo Chat"
                                                             }
                                                         }
+                                                    }
+                                                    button {
+                                                        class: if explorer_open { "dk-btn dk-btn-ghost is-active" } else { "dk-btn dk-btn-ghost" },
+                                                        onclick: move |_| {
+                                                            let cur = *show_vault_explorer.read();
+                                                            show_vault_explorer.set(!cur);
+                                                        },
+                                                        Icon { d: ICON_VAULT, class: "dk-ic-sm" }
+                                                        if explorer_open { "Ocultar lista" } else { "Cambiar bóveda ({vaults_total})" }
                                                     }
                                                 }
                                             }
@@ -808,18 +901,32 @@ pub fn Dashboard() -> Element {
                                                         {
                                                             let is_current = shown_vault.as_ref().map(|s| s.id == v.id).unwrap_or(false);
                                                             let pick = v.clone();
+                                                            let explore_pick = v.clone();
                                                             rsx! {
                                                                 div {
                                                                     key: "{v.id}",
                                                                     class: if is_current { "dk-explorer-row is-current" } else { "dk-explorer-row" },
                                                                     span { class: "dk-explorer-name", Icon { d: ICON_VAULT, class: "dk-ic-sm" } "{v.name}" }
-                                                                    if is_current {
-                                                                        span { class: "dk-chip dk-chip-ok", "Activa" }
-                                                                    } else {
+                                                                    div {
+                                                                        class: "flex items-center gap-1.5",
+                                                                        if is_current {
+                                                                            span { class: "dk-chip dk-chip-ok", "Activa" }
+                                                                        } else {
+                                                                            button {
+                                                                                class: "dk-btn dk-btn-ghost dk-btn-xs",
+                                                                                onclick: move |_| active_context.set(Some(pick.clone())),
+                                                                                "Activar"
+                                                                            }
+                                                                        }
                                                                         button {
-                                                                            class: "dk-btn dk-btn-ghost dk-btn-xs",
-                                                                            onclick: move |_| active_context.set(Some(pick.clone())),
-                                                                            "Seleccionar"
+                                                                            class: "dk-btn dk-btn-secondary dk-btn-xs",
+                                                                            title: "Ver archivos y contenido de esta bóveda",
+                                                                            onclick: move |_| {
+                                                                                active_context.set(Some(explore_pick.clone()));
+                                                                                active_view.set(ActiveView::Vault);
+                                                                            },
+                                                                            Icon { d: ICON_FOLDER, class: "dk-ic-xs" }
+                                                                            "Explorar"
                                                                         }
                                                                     }
                                                                 }
@@ -972,7 +1079,7 @@ pub fn Dashboard() -> Element {
                                                     span { class: "dk-muted", "Genera tu Token Key desde tu cuenta en kyo.broco.dev." }
                                                     button {
                                                         class: "dk-btn dk-btn-ghost dk-btn-xs",
-                                                        onclick: move |_| open_in_browser(KYO_WEB_URL),
+                                                        onclick: move |_| open_in_browser(KYO_MCP_URL),
                                                         "Abrir kyo.broco.dev"
                                                         Icon { d: ICON_EXTERNAL, class: "dk-ic-sm" }
                                                     }
@@ -1084,7 +1191,7 @@ fn DiagnosticsCard(server_url: String) -> Element {
                 }
                 div { class: "dk-diag-row",
                     dt { "Seguridad" }
-                    dd { span { class: "dk-chip dk-chip-ok", Icon { d: ICON_LOCK, class: "dk-ic-xs" } "Bearer Token · TLS" } }
+                    dd { span { class: "dk-chip dk-chip-ok", Icon { d: ICON_LOCK, class: "dk-ic-xs" } "DPAPI · TLS 1.3 · HTTP/2 Pool" } }
                 }
             }
         }
@@ -1110,7 +1217,7 @@ fn CredentialFields(
     rsx! {
         div {
             class: "dk-field",
-            label { class: "dk-label", r#for: "kyo-token-input", "Token Key (Bearer / JWT)" }
+            label { class: "dk-label", r#for: "kyo-token-input", "Token Key (Token MCP / JWT)" }
             div {
                 class: "dk-input-wrap",
                 span { class: "dk-input-icon", Icon { d: ICON_LOCK } }
@@ -1118,7 +1225,7 @@ fn CredentialFields(
                     id: "kyo-token-input",
                     r#type: if visible { "text" } else { "password" },
                     class: "dashboard-input dk-input",
-                    placeholder: "Pega tu Token Key aquí (eyJhbGciOiJIUzI1Ni...)",
+                    placeholder: "Pega tu Token Key aquí (kyo_mcp_... o eyJhbGci...)",
                     autocomplete: "off",
                     spellcheck: "false",
                     value: "{token_input}",

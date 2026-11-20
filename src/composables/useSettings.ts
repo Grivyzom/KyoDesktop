@@ -1,6 +1,16 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
+export type WindowLayerMode = 'top' | 'normal' | 'bottom' | 'behind_active';
+export type MusicDanceStylePreference =
+  | 'auto'
+  | 'groove'
+  | 'chill'
+  | 'rock'
+  | 'electro'
+  | 'urban'
+  | 'latin';
+
 export interface AppSettings {
   // General
   theme: 'dark' | 'light' | 'system';
@@ -8,6 +18,13 @@ export interface AppSettings {
   language: 'es' | 'en' | 'fr';
   startWithSystem: boolean;
   alwaysOnTop: boolean;
+  windowLayer: WindowLayerMode;
+
+  // Desplazamiento y Deambulación libre por el escritorio
+  freeRoamEnabled: boolean;
+  roamIntervalSeconds: number;
+  roamSpeed: 'slow' | 'normal' | 'fast';
+  roamMode: 'full' | 'edges' | 'curious';
 
   // Avatar & Aspecto
   avatarSize: number;
@@ -36,6 +53,14 @@ export interface AppSettings {
   nightInactivitySleepMinutes: number;
   dayInactivitySleepMinutes: number;
 
+  // Música & Detección de Aplicaciones Multimedia (Spotify, SMTC, VLC, etc.)
+  musicDetectionEnabled: boolean;
+  musicAutoDance: boolean;
+  musicDanceStyle: MusicDanceStylePreference;
+  musicShowFloatingPill: boolean;
+  musicReactOnTrackChange: boolean;
+  musicPreventSleep: boolean;
+
   // Avanzado
   hardwareAcceleration: boolean;
   debugMode: boolean;
@@ -44,11 +69,17 @@ export interface AppSettings {
 const STORAGE_KEY = 'kyo_agent_settings_v1';
 
 const defaultSettings: AppSettings = {
-  theme: 'dark',
+  theme: 'system',
   fontFamily: 'default',
   language: 'es',
   startWithSystem: false,
   alwaysOnTop: true,
+  windowLayer: 'top',
+
+  freeRoamEnabled: false,
+  roamIntervalSeconds: 30,
+  roamSpeed: 'normal',
+  roamMode: 'full',
 
   avatarSize: 170,
   shape: 'cercle',
@@ -73,6 +104,13 @@ const defaultSettings: AppSettings = {
   nightInactivitySleepMinutes: 6,
   dayInactivitySleepMinutes: 20,
 
+  musicDetectionEnabled: true,
+  musicAutoDance: true,
+  musicDanceStyle: 'auto',
+  musicShowFloatingPill: true,
+  musicReactOnTrackChange: true,
+  musicPreventSleep: true,
+
   hardwareAcceleration: true,
   debugMode: false,
 };
@@ -81,7 +119,9 @@ function loadSettings(): AppSettings {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      return { ...defaultSettings, ...JSON.parse(saved) };
+      const parsed = JSON.parse(saved);
+      const windowLayer = parsed.windowLayer ?? (parsed.alwaysOnTop === false ? 'normal' : 'top');
+      return { ...defaultSettings, ...parsed, windowLayer };
     }
   } catch (e) {
     console.error('Error loading settings:', e);
@@ -90,6 +130,32 @@ function loadSettings(): AppSettings {
 }
 
 export const settings = reactive<AppSettings>(loadSettings());
+
+if (typeof window !== 'undefined') {
+  // Sincronizar capa de ventana inicial en el backend
+  invoke('set_avatar_layer', { layer: settings.windowLayer }).catch(() => {});
+
+  watch(
+    () => settings.windowLayer,
+    (newLayer) => {
+      settings.alwaysOnTop = newLayer === 'top';
+      invoke('set_avatar_layer', { layer: newLayer }).catch((err) => {
+        console.error('Error setting avatar layer:', err);
+      });
+    }
+  );
+
+  watch(
+    () => settings.alwaysOnTop,
+    (val) => {
+      if (val && settings.windowLayer !== 'top') {
+        settings.windowLayer = 'top';
+      } else if (!val && settings.windowLayer === 'top') {
+        settings.windowLayer = 'normal';
+      }
+    }
+  );
+}
 
 // Auto-guardado con 250 ms de rebote: evita bloquear el hilo principal en cada
 // tic de deslizador o pulsacion rapida sin dejar de sentirse instantaneo.

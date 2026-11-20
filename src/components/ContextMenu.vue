@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount } from 'vue';
+import { computed, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import KyoIcon from './KyoIcon.vue';
+import { useAvatarMovement } from '../composables/useAvatarMovement';
+import { useMusicDetector } from '../composables/useMusicDetector';
 
 const props = defineProps<{
   position: { x: number; y: number };
@@ -14,6 +16,48 @@ const emit = defineEmits<{
   (e: 'open-options'): void;
   (e: 'open-chat'): void;
 }>();
+
+const { currentLayer, cycleLayer, isRoamingActive, toggleRoaming } = useAvatarMovement();
+const {
+  isMusicDetected,
+  isMusicPlaying,
+  currentTrack,
+  primaryAppName,
+  togglePlayPause,
+  nextTrack,
+  previousTrack,
+} = useMusicDetector();
+
+const currentLayerLabel = computed(() => {
+  switch (currentLayer.value) {
+    case 'top':
+      return 'Superior';
+    case 'normal':
+      return 'Normal';
+    case 'bottom':
+      return 'Fondo';
+    case 'behind_active':
+      return 'Bajo ventana';
+    default:
+      return 'Superior';
+  }
+});
+
+async function handleCycleLayer() {
+  await cycleLayer();
+}
+
+function handleToggleRoam() {
+  toggleRoaming();
+  emit('close');
+}
+
+defineExpose({
+  currentLayerLabel,
+  isRoamingActive,
+  handleCycleLayer,
+  handleToggleRoam,
+});
 
 async function handleOpenChat() {
   emit('close');
@@ -66,6 +110,48 @@ onBeforeUnmount(() => {
       <KyoIcon name="chat" class="w-3.5 h-3.5" />
       <span>Panel de control</span>
     </button>
+
+    <button type="button" class="kyo-nav" @click="handleCycleLayer">
+      <KyoIcon name="layers" class="w-3.5 h-3.5 text-blue-400" />
+      <span>Capa: {{ currentLayerLabel }}</span>
+    </button>
+
+    <button type="button" class="kyo-nav" @click="handleToggleRoam">
+      <KyoIcon name="move" class="w-3.5 h-3.5 text-emerald-400" />
+      <span>{{ isRoamingActive ? 'Pausar paseo' : 'Paseo libre' }}</span>
+    </button>
+
+    <div v-if="isMusicDetected" class="my-1 pt-1 border-t kyo-divider space-y-1">
+      <div class="px-2 text-[10px] truncate opacity-75 font-medium" :title="currentTrack?.title || primaryAppName">
+        ♫ {{ currentTrack?.title || primaryAppName }}
+      </div>
+      <div class="flex items-center justify-around px-1 py-0.5">
+        <button
+          type="button"
+          class="p-1 rounded hover:bg-zinc-500/20"
+          title="Pista anterior"
+          @click="previousTrack()"
+        >
+          <KyoIcon name="skipPrev" class="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          class="p-1 rounded hover:bg-zinc-500/20 text-emerald-400"
+          :title="isMusicPlaying ? 'Pausar' : 'Reproducir'"
+          @click="togglePlayPause()"
+        >
+          <KyoIcon :name="isMusicPlaying ? 'pause' : 'play'" class="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          class="p-1 rounded hover:bg-zinc-500/20"
+          title="Siguiente pista"
+          @click="nextTrack()"
+        >
+          <KyoIcon name="skipNext" class="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
 
     <button type="button" class="kyo-nav" @click="handleOptions">
       <KyoIcon name="gear" class="w-3.5 h-3.5" />

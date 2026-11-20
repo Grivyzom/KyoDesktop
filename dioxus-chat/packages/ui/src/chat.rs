@@ -10,10 +10,11 @@
 
 use dioxus::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use crate::voice::{start_transcription, stop_transcription, AudioWaveBars, VoiceState};
+use crate::music::{trigger_music_action, use_music_context};
 
 // ============================================================================
 // KYO AI PROTOCOL DATA MODELS (POST /api/v1/ai/ask/stream)
@@ -190,6 +191,7 @@ const CHAT_CSS: &str = include_str!("../assets/styling/chat.css");
 #[component]
 pub fn ChatContainer() -> Element {
     let active_view = try_use_context::<Signal<crate::models::ActiveView>>();
+    let mut music_ctx = use_music_context();
 
     // Reactive root states: No hardcoded chats or mock messages
     let mut messages = use_signal(Vec::<Message>::new);
@@ -197,6 +199,14 @@ pub fn ChatContainer() -> Element {
     let mut is_generating = use_signal(|| false);
     let mut input_text = use_signal(String::new);
     let mut generation_task: Signal<Option<dioxus::dioxus_core::Task>> = use_signal(|| None);
+
+    use_effect(move || {
+        let pending = music_ctx.pending_chat_prompt.read().clone();
+        if let Some(prompt_text) = pending {
+            input_text.set(prompt_text);
+            music_ctx.pending_chat_prompt.set(None);
+        }
+    });
 
     // Aborts active agent generation
     let mut stop_generation = move || {
@@ -235,6 +245,57 @@ pub fn ChatContainer() -> Element {
         messages.write().push(Message::user(&trimmed));
         trigger_auto_scroll();
 
+        // Comandos locales instantáneos de control musical (/play, /pause, /next, /prev, /music)
+        let cmd_lower = trimmed.to_lowercase();
+        if cmd_lower == "/play" || cmd_lower == "/pause" || cmd_lower == "/playpause" {
+            trigger_music_action("play_pause", music_ctx.state);
+            messages.write().push(Message::new(
+                Role::Assistant,
+                "♫ Comando multimedia enviado: **Reproducir / Pausar**.",
+                MessageStatus::Sent,
+            ));
+            trigger_auto_scroll();
+            return;
+        } else if cmd_lower == "/next" || cmd_lower == "/siguiente" {
+            trigger_music_action("next", music_ctx.state);
+            messages.write().push(Message::new(
+                Role::Assistant,
+                "⏭ Comando multimedia enviado: **Siguiente pista**.",
+                MessageStatus::Sent,
+            ));
+            trigger_auto_scroll();
+            return;
+        } else if cmd_lower == "/prev" || cmd_lower == "/previous" || cmd_lower == "/anterior" {
+            trigger_music_action("previous", music_ctx.state);
+            messages.write().push(Message::new(
+                Role::Assistant,
+                "⏮ Comando multimedia enviado: **Pista anterior**.",
+                MessageStatus::Sent,
+            ));
+            trigger_auto_scroll();
+            return;
+        } else if cmd_lower == "/music" || cmd_lower == "/musica" {
+            let snap = music_ctx.state.read().clone();
+            let reply = if let Some(ref tr) = snap.current_track {
+                let state_str = if tr.is_playing { "Reproduciendo ahora" } else { "En pausa" };
+                format!(
+                    "🎵 **Estado Musical Detectado:**\n- **Aplicación:** {}\n- **Estado:** {}\n- **Canción:** {}\n- **Artista:** {}",
+                    tr.source_app_name,
+                    state_str,
+                    tr.title,
+                    if tr.artist.is_empty() { "Desconocido" } else { &tr.artist }
+                )
+            } else if !snap.running_apps.is_empty() {
+                let apps_list: Vec<String> = snap.running_apps.iter().map(|a| a.name.clone()).collect();
+                format!("🎵 **Aplicaciones de música abiertas:** {} (Sin reproducción activa).", apps_list.join(", "))
+            } else {
+                "🎵 No se detectan aplicaciones de música activas en este momento.".to_string()
+            };
+            messages.write().push(Message::new(Role::Assistant, reply, MessageStatus::Sent));
+            trigger_auto_scroll();
+            return;
+        }
+
         // Acotar el historial previo a los últimos 6 mensajes (tope de tokens de Kyo)
         let history: Vec<HistoryMessage> = {
             let msgs = messages.read();
@@ -270,7 +331,11 @@ pub fn ChatContainer() -> Element {
         is_generating.set(true);
         trigger_auto_scroll();
 
-        let prompt_clone = trimmed.clone();
+        let music_context_line = music_ctx.state.read().to_agent_context_line();
+        let prompt_clone = match music_context_line {
+            Some(ctx_line) => format!("{ctx_line}\n\n{trimmed}"),
+            None => trimmed.clone(),
+        };
         let target_id = assistant_id.clone();
 
         // Spawn non-blocking background streaming task
@@ -384,6 +449,24 @@ pub fn ChatContainer() -> Element {
                                 rect { x: "3", y: "14", width: "7", height: "7", rx: "1" }
                             }
                             span { "Panel de control" }
+                        }
+                        button {
+                            class: "chat-header-btn flex items-center gap-1.5",
+                            title: "Explorar Bóveda activa",
+                            onclick: move |_| {
+                                av.set(crate::models::ActiveView::Vault);
+                            },
+                            svg {
+                                class: "w-3.5 h-3.5 text-amber-400",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "2",
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                path { d: "M21 8v13H3V8M1 3h22v5H1zM10 12h4" }
+                            }
+                            span { "Bóveda" }
                         }
                     }
                     if *is_generating.read() {
@@ -751,7 +834,7 @@ pub fn FormattedMessageContent(content: String, is_streaming: bool) -> Element {
 // 7. CHAT INPUT BAR & GENERATION CONTROLS (ChatInput)
 // ============================================================================
 
-/// Textarea with keyboard handling (Enter to submit, Shift+Enter for newline) and dynamic Stop button.
+/// Textarea with keyboard handling (Enter to submit, Shift+Enter for newline), dynamic Stop button and Real-Time Voice Transcription (STT).
 #[component]
 pub fn ChatInput(
     mut input_text: Signal<String>,
@@ -763,18 +846,227 @@ pub fn ChatInput(
     let current_val = input_text.read().clone();
     let has_text = !current_val.trim().is_empty();
 
+    let mut voice_state = use_hook(VoiceState::new);
+    let music_ctx = use_music_context();
+    let music_snap = music_ctx.state.read().clone();
+    let is_listening = *voice_state.is_listening.read();
+    let interim = voice_state.interim_transcript.read().clone();
+    let err_opt = voice_state.speech_error.read().clone();
+    let audio_lvl = *voice_state.audio_level.read();
+    let current_lang = voice_state.lang.read().clone();
+
+    use_drop(move || {
+        let _ = document::eval("if (window.__kyo_stop_speech) { window.__kyo_stop_speech(); }");
+    });
+
     rsx! {
         footer {
             class: "flex-none p-4 md:p-6 bg-zinc-950 border-t border-zinc-800/80",
             div {
                 class: "max-w-4xl mx-auto space-y-2",
+
+                // Banner de Contexto Musical Activo (Spotify / SMTC)
+                if let Some(ref tr) = music_snap.current_track {
+                    div {
+                        class: "chat-music-banner select-none",
+                        div {
+                            class: "chat-music-left",
+                            span {
+                                class: if tr.is_playing {
+                                    "chat-music-badge"
+                                } else {
+                                    "chat-music-badge is-paused"
+                                },
+                                span {
+                                    class: if tr.is_playing {
+                                        "sidebar-music-dot is-playing animate-pulse"
+                                    } else {
+                                        "sidebar-music-dot"
+                                    }
+                                }
+                                "{tr.source_app_name}"
+                            }
+                            div {
+                                class: "chat-music-track",
+                                span {
+                                    class: "chat-music-track-title",
+                                    "{tr.title}"
+                                }
+                                if !tr.artist.is_empty() {
+                                    span {
+                                        class: "chat-music-track-artist",
+                                        "· {tr.artist}"
+                                    }
+                                }
+                            }
+                        }
+                        div {
+                            class: "chat-music-actions",
+                            button {
+                                type: "button",
+                                class: "chat-music-icon-btn",
+                                title: "Pista anterior",
+                                onclick: move |_| trigger_music_action("previous", music_ctx.state),
+                                svg {
+                                    class: "w-3 h-3 fill-none stroke-current stroke-2",
+                                    view_box: "0 0 24 24",
+                                    polygon { points: "19 20 9 12 19 4 19 20" }
+                                    line { x1: "5", y1: "19", x2: "5", y2: "5" }
+                                }
+                            }
+                            button {
+                                type: "button",
+                                class: "chat-music-icon-btn",
+                                title: if tr.is_playing { "Pausar" } else { "Reproducir" },
+                                onclick: move |_| trigger_music_action("play_pause", music_ctx.state),
+                                if tr.is_playing {
+                                    svg {
+                                        class: "w-3 h-3 fill-current text-emerald-400",
+                                        view_box: "0 0 24 24",
+                                        rect { x: "6", y: "5", width: "4", height: "14", rx: "1" }
+                                        rect { x: "14", y: "5", width: "4", height: "14", rx: "1" }
+                                    }
+                                } else {
+                                    svg {
+                                        class: "w-3 h-3 fill-current text-indigo-400",
+                                        view_box: "0 0 24 24",
+                                        polygon { points: "6 4 20 12 6 20 6 4" }
+                                    }
+                                }
+                            }
+                            button {
+                                type: "button",
+                                class: "chat-music-icon-btn",
+                                title: "Siguiente pista",
+                                onclick: move |_| trigger_music_action("next", music_ctx.state),
+                                svg {
+                                    class: "w-3 h-3 fill-none stroke-current stroke-2",
+                                    view_box: "0 0 24 24",
+                                    polygon { points: "5 4 15 12 5 20 5 4" }
+                                    line { x1: "19", y1: "5", x2: "19", y2: "19" }
+                                }
+                            }
+                            {
+                                let song_t = tr.title.clone();
+                                let song_a = tr.artist.clone();
+                                rsx! {
+                                    button {
+                                        type: "button",
+                                        class: "chat-music-ask-btn",
+                                        title: "Preguntar a Kyo sobre esta canción",
+                                        onclick: move |_| {
+                                            let q = if song_a.is_empty() {
+                                                format!("Estoy escuchando \"{song_t}\". ¿Qué me puedes contar sobre esta canción o qué me recomiendas parecido?")
+                                            } else {
+                                                format!("Estoy escuchando \"{song_t}\" de {song_a}. ¿Qué me puedes contar sobre esta canción y qué temas similares me recomiendas?")
+                                            };
+                                            input_text.set(q);
+                                        },
+                                        svg {
+                                            class: "w-3 h-3 fill-none stroke-current stroke-2",
+                                            view_box: "0 0 24 24",
+                                            path { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" }
+                                        }
+                                        span { "Preguntar a Kyo" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Banner de Error de Reconocimiento de Voz
+                if let Some(err_msg) = err_opt {
+                    div {
+                        class: "flex items-center justify-between p-2.5 px-3.5 rounded-xl bg-rose-950/70 border border-rose-800/60 text-rose-200 text-xs shadow-md animate-fade-in",
+                        div {
+                            class: "flex items-center gap-2",
+                            svg {
+                                class: "w-4 h-4 text-rose-400 flex-none fill-none stroke-current stroke-2",
+                                view_box: "0 0 24 24",
+                                circle { cx: "12", cy: "12", r: "10" }
+                                line { x1: "12", y1: "8", x2: "12", y2: "12" }
+                                line { x1: "12", y1: "16", x2: "12.01", y2: "16" }
+                            }
+                            span { class: "font-medium leading-normal", "{err_msg}" }
+                        }
+                        button {
+                            class: "text-rose-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer",
+                            title: "Cerrar advertencia",
+                            onclick: move |_| voice_state.speech_error.set(None),
+                            svg {
+                                class: "w-3.5 h-3.5 fill-none stroke-current stroke-2",
+                                view_box: "0 0 24 24",
+                                line { x1: "18", y1: "6", x2: "6", y2: "18" }
+                                line { x1: "6", y1: "6", x2: "18", y2: "18" }
+                            }
+                        }
+                    }
+                }
+
+                // Banner Activo de Transcripción en Tiempo Real
+                if is_listening {
+                    div {
+                        class: "flex items-center justify-between px-3.5 py-2 rounded-xl bg-zinc-900/95 border border-rose-500/40 text-xs shadow-md backdrop-blur-md animate-fade-in",
+                        div {
+                            class: "flex items-center gap-2.5 min-w-0 flex-1 mr-2",
+                            div {
+                                class: "relative flex items-center justify-center w-3 h-3 flex-none",
+                                span { class: "absolute w-full h-full rounded-full bg-rose-500 animate-ping opacity-75" }
+                                span { class: "relative w-2 h-2 rounded-full bg-rose-500" }
+                            }
+                            span {
+                                class: "font-semibold text-rose-300 font-mono text-[11px] uppercase tracking-wider flex-none",
+                                "Voz Activa"
+                            }
+                            AudioWaveBars { level: audio_lvl }
+                            if !interim.is_empty() {
+                                span {
+                                    class: "voice-interim-preview truncate text-zinc-200 text-xs pl-2 border-l border-zinc-700/60 font-sans",
+                                    "\"{interim}\""
+                                }
+                            } else {
+                                span {
+                                    class: "text-zinc-500 text-xs italic pl-2 border-l border-zinc-700/60 truncate font-sans",
+                                    "Escuchando... habla al micrófono"
+                                }
+                            }
+                        }
+                        div {
+                            class: "flex items-center gap-2 flex-none",
+                            button {
+                                class: "px-2 py-0.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] font-mono border border-zinc-700 transition-colors cursor-pointer",
+                                title: "Cambiar idioma (Español / Inglés)",
+                                onclick: move |_| {
+                                    let next_lang = if current_lang == "es-ES" { "en-US" } else { "es-ES" };
+                                    voice_state.lang.set(next_lang.to_string());
+                                    stop_transcription(voice_state);
+                                    start_transcription(voice_state, input_text);
+                                },
+                                if current_lang == "es-ES" { "ES" } else { "EN" }
+                            }
+                            button {
+                                class: "flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-700/50 text-xs font-medium transition-colors cursor-pointer",
+                                onclick: move |_| stop_transcription(voice_state),
+                                "Detener"
+                            }
+                        }
+                    }
+                }
+
                 div {
                     class: "relative flex items-end rounded-2xl bg-zinc-900 border border-zinc-700/70 shadow-lg focus-within:border-indigo-500/80 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all p-2",
 
                     // Textarea Input
                     textarea {
                         class: "w-full max-h-36 min-h-[52px] bg-transparent text-zinc-100 placeholder-zinc-500 px-3 py-2 text-sm leading-relaxed resize-none focus:outline-none scrollbar-thin scrollbar-thumb-zinc-700",
-                        placeholder: if generating { "Agent is currently replying..." } else { "Message Antigravity Agent... (Press Enter to send, Shift+Enter for new line)" },
+                        placeholder: if generating {
+                            "Agent is currently replying..."
+                        } else if is_listening {
+                            "Escuchando tu voz... (las palabras se transcriben aquí en tiempo real)"
+                        } else {
+                            "Message Antigravity Agent... (Escribe o usa el micrófono para dictar por voz)"
+                        },
                         value: "{current_val}",
                         rows: "1",
                         disabled: generating,
@@ -782,6 +1074,9 @@ pub fn ChatInput(
                         onkeydown: move |evt: KeyboardEvent| {
                             if evt.key() == Key::Enter && !evt.modifiers().shift() {
                                 evt.prevent_default();
+                                if is_listening {
+                                    stop_transcription(voice_state);
+                                }
                                 if has_text && !generating {
                                     on_send.call(());
                                 }
@@ -789,9 +1084,42 @@ pub fn ChatInput(
                         }
                     }
 
-                    // Dynamic Submit / Stop Button
+                    // Dynamic Submit / Stop / Voice Controls
                     div {
-                        class: "flex-none ml-2 mb-1",
+                        class: "flex-none ml-2 mb-1 flex items-center gap-1.5",
+
+                        // Botón de Micrófono (Dictado por Voz en Tiempo Real)
+                        button {
+                            type: "button",
+                            class: if is_listening {
+                                "voice-recording-btn flex items-center justify-center w-9 h-9 rounded-xl bg-rose-600/20 text-rose-400 border border-rose-500/50 hover:bg-rose-600/30 transition-all cursor-pointer shadow-lg shadow-rose-950/40"
+                            } else {
+                                "flex items-center justify-center w-9 h-9 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700/50 transition-all cursor-pointer"
+                            },
+                            disabled: generating,
+                            title: if is_listening {
+                                "Detener dictado por voz"
+                            } else {
+                                "Dictar por voz (Transcripción en tiempo real)"
+                            },
+                            onclick: move |_| {
+                                if is_listening {
+                                    stop_transcription(voice_state);
+                                } else {
+                                    start_transcription(voice_state, input_text);
+                                }
+                            },
+                            svg {
+                                class: "w-4 h-4 fill-none stroke-current stroke-2",
+                                view_box: "0 0 24 24",
+                                path { d: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" }
+                                path { d: "M19 10v2a7 7 0 0 1-14 0v-2" }
+                                line { x1: "12", y1: "19", x2: "12", y2: "22" }
+                                line { x1: "8", y1: "22", x2: "16", y2: "22" }
+                            }
+                        }
+
+                        // Botón Enviar / Detener Generación
                         if generating {
                             button {
                                 class: "flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20 transition-colors text-xs font-semibold shadow-sm",
@@ -812,6 +1140,9 @@ pub fn ChatInput(
                                 },
                                 disabled: !has_text,
                                 onclick: move |_| {
+                                    if is_listening {
+                                        stop_transcription(voice_state);
+                                    }
                                     if has_text {
                                         on_send.call(());
                                     }
@@ -834,6 +1165,7 @@ pub fn ChatInput(
                         class: "flex items-center gap-3",
                         span { "↵ Send" }
                         span { "⇧↵ New line" }
+                        span { "🎙 Mic to dictate" }
                     }
                     div {
                         span { "Antigravity UI • Rust Full-Stack Engine" }
@@ -848,43 +1180,30 @@ pub fn ChatInput(
 // 8. KYO BACKEND CLIENT (HTTP / SSE STREAMING)
 // ============================================================================
 
-/// Resuelve la URL base: Sidecar local (si KYO_SIDECAR_PORT está presente) o Cloud Upstream.
+/// Resuelve la URL base: Sidecar local (si KYO_SIDECAR_PORT está presente) o Cloud Upstream configurado.
 pub fn resolve_api_base() -> String {
     if let Ok(port) = std::env::var("KYO_SIDECAR_PORT") {
         if let Ok(p) = port.trim().parse::<u16>() {
             return format!("http://127.0.0.1:{p}/api/v1");
         }
     }
-    "https://kyo.broco.dev/api/v1".to_string()
+    let base = crate::settings::load_server_url();
+    let clean = base.trim().trim_end_matches('/');
+    if clean.ends_with("/api/v1") {
+        clean.to_string()
+    } else {
+        format!("{clean}/api/v1")
+    }
 }
 
-/// Obtiene el token JWT desde la variable de entorno KYO_AUTH_TOKEN o del archivo %APPDATA%/kyo/session.json.
+/// Obtiene el token de autenticación desencriptado desde la caché en memoria / DPAPI (`%APPDATA%/kyo/session.json`).
 pub fn resolve_jwt_token() -> Option<String> {
-    if let Ok(token) = std::env::var("KYO_AUTH_TOKEN") {
-        let trimmed = token.trim().to_string();
-        if !trimmed.is_empty() {
-            return Some(trimmed);
-        }
+    let tok = crate::settings::load_auth_token();
+    if tok.is_empty() {
+        None
+    } else {
+        Some(tok)
     }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_path = PathBuf::from(appdata).join("kyo").join("session.json");
-        if session_path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&session_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(token) = json.get("token").and_then(|t| t.as_str()) {
-                        return Some(token.to_string());
-                    }
-                    if let Some(token) = json.get("access_token").and_then(|t| t.as_str()) {
-                        return Some(token.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Consume el endpoint de streaming de IA de Kyo (POST /api/v1/ai/ask/stream) en tiempo real.
@@ -905,7 +1224,7 @@ pub async fn stream_kyo_ask(
         history,
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::settings::shared_stream_client();
     let mut req = client
         .post(&url)
         .header("Content-Type", "application/json")

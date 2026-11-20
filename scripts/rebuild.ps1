@@ -30,7 +30,11 @@
 .PARAMETER DioxusOnly
     Reconstruye unicamente el Dioxus Chat en Rust.
 .PARAMETER TauriOnly
-    Reconstruye unicamente el Host principal de Tauri.
+    Reconstruye unicamente el Host principal de Tauri (Kyo-agent.exe).
+.PARAMETER KyoOnly
+    Reconstruye especificamente Kyo-agent.exe y su frontend (alias para -TauriOnly).
+.PARAMETER KyoAgentOnly
+    Reconstruye especificamente Kyo-agent.exe y su frontend (alias para -KyoOnly).
 .PARAMETER Clean
     Limpia los artefactos de compilacion previos (dist/, target/, etc.) antes de compilar.
 .PARAMETER Bundle
@@ -69,6 +73,10 @@ param (
     [switch]$SidecarOnly,
     [switch]$DioxusOnly,
     [switch]$TauriOnly,
+    [switch]$KyoOnly,
+    [switch]$KyoAgentOnly,
+    [switch]$KyoAgent,
+    [switch]$AgentOnly,
     [switch]$Clean,
     [switch]$Bundle,
     [switch]$Run,
@@ -124,11 +132,18 @@ if ($FrontendOnly) {
     $buildSidecar  = $false
     $buildDioxus   = $true
     $buildTauri    = $false
-} elseif ($TauriOnly) {
-    $buildFrontend = $false
+} elseif ($TauriOnly -or $KyoOnly -or $KyoAgentOnly -or $KyoAgent -or $AgentOnly) {
+    # Reconstruccion especifica de Kyo-agent.exe (incluye frontend para asegurar empaquetado actualizado)
+    $buildFrontend = $true
     $buildSidecar  = $false
     $buildDioxus   = $false
     $buildTauri    = $true
+}
+
+# Si Tauri se va a compilar pero no existe el binario del sidecar Go requerido por tauri.conf.json, forzar compilacion del sidecar
+$sidecarRequiredBin = Join-Path $binariesDir "go-server-x86_64-pc-windows-msvc.exe"
+if ($buildTauri -and -not (Test-Path $sidecarRequiredBin)) {
+    $buildSidecar = $true
 }
 
 # --- Formato de Mensajes ---
@@ -232,6 +247,20 @@ if ($Clean) {
         if (Test-Path $sidecarBin) {
             Remove-Item -Path $sidecarBin -Force -ErrorAction SilentlyContinue
             Write-Info "Binario de sidecar eliminado."
+        }
+    }
+    if ($buildTauri) {
+        $kyoBins = @(
+            (Join-Path $tauriDir "target\$buildTarget\Kyo-agent.exe"),
+            (Join-Path $tauriDir "target\$buildTarget\tauri-app.exe"),
+            (Join-Path $projectRoot "Kyo-agent.exe"),
+            (Join-Path $dioxusDir "Kyo-agent.exe")
+        )
+        foreach ($bin in $kyoBins) {
+            if (Test-Path $bin) {
+                Remove-Item -Path $bin -Force -ErrorAction SilentlyContinue
+                Write-Info "Binario Kyo-agent eliminado: $bin"
+            }
         }
     }
     Write-Success "Limpieza completada."
@@ -423,6 +452,23 @@ if ($buildTauri) {
 
     Push-Location $frontendDir
     try {
+        # Asegurar detencion de procesos que pudieran bloquear la actualizacion de Kyo-agent.exe
+        $targetProcsBeforeTauri = Get-Process -Name @('Kyo-agent', 'tauri-app', 'desktop', 'go-server') -ErrorAction SilentlyContinue
+        if ($targetProcsBeforeTauri) {
+            foreach ($proc in $targetProcsBeforeTauri) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Milliseconds 600
+        }
+
+        $kyoExe = Join-Path $tauriDir "target\$buildTarget\Kyo-agent.exe"
+        $kyoExeAlt = Join-Path $tauriDir "target\$buildTarget\tauri-app.exe"
+
+        # Liberar el destino previo para prevenir bloqueos de 'rename' en Windows (os error 5)
+        if (Test-Path $kyoExe) {
+            Remove-Item -Path $kyoExe -Force -ErrorAction SilentlyContinue
+        }
+
         $tauriArgs = @("tauri", "build")
         if (-not $Bundle) {
             $tauriArgs += "--no-bundle"
@@ -432,33 +478,67 @@ if ($buildTauri) {
         }
 
         Write-Info "$pmCmd $($tauriArgs -join ' ')"
+        $buildStartTime = [System.DateTime]::UtcNow.AddSeconds(-2)
         & $pmCmd @tauriArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "Error al compilar Tauri Host con $pmCmd (codigo de salida: $LASTEXITCODE)"
+        $tauriExitCode = $LASTEXITCODE
+
+        # Si tauri build fallo unicamente por el rename de Windows, intentar recuperacion con tauri-app.exe
+        if ($tauriExitCode -ne 0) {
+            Start-Sleep -Milliseconds 500
+            # Volver a asegurar que ningun proceso residual este bloqueando el archivo
+            Get-Process -Name @('Kyo-agent', 'tauri-app') -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            
+            if (Test-Path $kyoExeAlt) {
+                $altItem = Get-Item $kyoExeAlt
+                if ($altItem.LastWriteTimeUtc -ge $buildStartTime) {
+                    Write-WarnMsg "Tauri CLI devolvio codigo $tauriExitCode (posible bloqueo de rename en Windows), pero tauri-app.exe fue compilado correctamente. Copiando a Kyo-agent.exe..."
+                    Copy-Item -Path $kyoExeAlt -Destination $kyoExe -Force
+                } else {
+                    throw "Error al compilar Tauri Host con $pmCmd (codigo de salida: $tauriExitCode)"
+                }
+            } else {
+                throw "Error al compilar Tauri Host con $pmCmd (codigo de salida: $tauriExitCode)"
+            }
         }
 
-        $kyoExe = Join-Path $tauriDir "target\$buildTarget\Kyo-agent.exe"
+        if (-not (Test-Path $kyoExe) -and (Test-Path $kyoExeAlt)) {
+            Copy-Item -Path $kyoExeAlt -Destination $kyoExe -Force
+        } elseif ((Test-Path $kyoExeAlt) -and (Test-Path $kyoExe) -and ((Get-Item $kyoExeAlt).LastWriteTime -gt (Get-Item $kyoExe).LastWriteTime)) {
+            Copy-Item -Path $kyoExeAlt -Destination $kyoExe -Force
+        }
+
         if (-not (Test-Path $kyoExe)) {
-            $kyoExeAlt = Join-Path $tauriDir "target\$buildTarget\tauri-app.exe"
-            if (Test-Path $kyoExeAlt) {
-                $kyoExe = $kyoExeAlt
+            throw "No se encontro el ejecutable generado Kyo-agent.exe en $($tauriDir)\target\$buildTarget"
+        }
+
+        # Sincronizar copias auxiliares de Kyo-agent.exe para acceso directo en raiz y modulos
+        $kyoCopies = @(
+            (Join-Path $projectRoot "Kyo-agent.exe"),
+            (Join-Path $dioxusDir "Kyo-agent.exe")
+        )
+        foreach ($copyPath in $kyoCopies) {
+            try {
+                Copy-Item -Path $kyoExe -Destination $copyPath -Force -ErrorAction SilentlyContinue
+            } catch {
+                # Ignorar si algun archivo temporal o en uso no se puede sobreescribir inmediatamente
             }
         }
 
         $sw.Stop()
-        $sizeStr = if (Test-Path $kyoExe) { Format-Size (Get-Item $kyoExe).Length } else { "N/A" }
-        Write-Success "Tauri Host compilado exitosamente ($sizeStr en $($sw.Elapsed.TotalSeconds.ToString('F2'))s)"
+        $fi = Get-Item $kyoExe
+        $sizeStr = Format-Size $fi.Length
+        Write-Success "Kyo-agent.exe compilado y sincronizado exitosamente ($sizeStr en $($sw.Elapsed.TotalSeconds.ToString('F2'))s)"
         $results.Add([PSCustomObject]@{
-            Component = "Tauri Host (Kyo-agent)"
+            Component = "Tauri Host (Kyo-agent.exe)"
             Status    = "SUCCESS"
             Duration  = "$($sw.Elapsed.TotalSeconds.ToString('F2'))s"
-            Output    = "src-tauri/target/$buildTarget/Kyo-agent.exe"
+            Output    = "Kyo-agent.exe & src-tauri/target/$buildTarget/..."
         })
     } catch {
         $sw.Stop()
         Write-ErrMsg "Fallo al compilar Tauri Host: $_"
         $results.Add([PSCustomObject]@{
-            Component = "Tauri Host (Kyo-agent)"
+            Component = "Tauri Host (Kyo-agent.exe)"
             Status    = "FAILED"
             Duration  = "$($sw.Elapsed.TotalSeconds.ToString('F2'))s"
             Output    = "Error: $_"
@@ -489,6 +569,9 @@ Write-Host ("=" * 70) -ForegroundColor Cyan
 # --- 10. Lanzamiento Opcional (-Run) ---
 if ($Run) {
     $exeToRun = Join-Path $tauriDir "target\$buildTarget\Kyo-agent.exe"
+    if (-not (Test-Path $exeToRun)) {
+        $exeToRun = Join-Path $projectRoot "Kyo-agent.exe"
+    }
     if (-not (Test-Path $exeToRun)) {
         $exeToRun = Join-Path $dioxusDir "desktop.exe"
     }

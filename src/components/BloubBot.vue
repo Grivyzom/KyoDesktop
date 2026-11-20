@@ -19,7 +19,7 @@ import {
 } from '@/bot/skins'
 import { blockAt, defaultCycle, offsetOf, type Block } from '@/bot/cycles'
 import { DEMI_VIEWBOX, RAYON } from '@/bot/repere'
-import { followsCursor, type StateId } from '@/bot/states'
+import { followsCursor, isDanceState, type StateId } from '@/bot/states'
 
 const props = withDefaults(
   defineProps<{
@@ -64,6 +64,16 @@ const props = withDefaults(
     nightInactivitySleepMinutes?: number
     /** Minutes d'inactivité avant sommeil de jour */
     dayInactivitySleepMinutes?: number
+    /** Estado de movimiento o vuelo libre por el escritorio */
+    isMoving?: boolean
+    /** Estado de arrastre manual con el cursor */
+    isDragging?: boolean
+    /** Vector de velocidad del desplazamiento */
+    movementVelocity?: { vx: number; vy: number }
+    /** Indica si Kyo debe mantener el baile activo porque hay música sonando */
+    musicDancing?: boolean
+    /** Estado de animación de baile activo según el estilo de la canción */
+    danceState?: StateId
   }>(),
   {
     size: 320,
@@ -82,7 +92,12 @@ const props = withDefaults(
     interactiveFlinch: true,
     autoSleepEnabled: true,
     nightInactivitySleepMinutes: 6,
-    dayInactivitySleepMinutes: 20
+    dayInactivitySleepMinutes: 20,
+    isMoving: false,
+    isDragging: false,
+    movementVelocity: () => ({ vx: 0, vy: 0 }),
+    musicDancing: false,
+    danceState: 'dance',
   }
 )
 
@@ -111,9 +126,7 @@ const frame = shallowRef<BotFrame>(engine.sample(props.frozenAt ?? 0))
 
 const uid = Math.random().toString(36).slice(2, 8)
 
-let raf = 0
 let nextAt = Infinity
-let last = 0
 let clock = 0
 let blockStart = 0
 let lastSampleClock = -Infinity
@@ -192,6 +205,20 @@ function setState(s: StateId) {
   }
 }
 
+/**
+ * Detiene cualquier animación de baile de forma inmediata sin mezcla residual de notas
+ * (evita que queden estelas de notas musicales al arrastrar la ventana transparente).
+ */
+function stopDanceImmediately() {
+  if (isDanceState(state.value) || isDanceState(engine.state)) {
+    state.value = 'idle'
+    engine.reset('idle', clock)
+    frame.value = engine.sample(clock)
+    triggerRef(frame)
+    writeDirectDomUpdates()
+  }
+}
+
 /* ------------------------------------------------------- Horloge circadienne (Nuit 22h-06h) */
 
 function checkIsNight(): boolean {
@@ -201,30 +228,6 @@ function checkIsNight(): boolean {
 
 const isNight = ref(checkIsNight())
 let nightTimer: ReturnType<typeof setInterval> | null = null
-
-const isNightHaloVisible = computed(() => {
-  return (
-    props.volumetric &&
-    props.size >= 56 &&
-    props.frozenAt === undefined &&
-    isNight.value &&
-    state.value !== 'sleep' &&
-    state.value !== 'deepsleep'
-  )
-})
-
-const haloStyle = computed(() => {
-  const haloSize = props.size * 1.35
-  const offset = -props.size * 0.175
-  return {
-    width: `${haloSize}px`,
-    height: `${haloSize}px`,
-    left: `${offset}px`,
-    top: `${offset}px`,
-    borderRadius: '50%',
-    background: 'radial-gradient(closest-side, rgba(129, 140, 248, 0.22), rgba(129, 140, 248, 0))'
-  }
-})
 
 const groundStyle = computed(() => {
   const groundW = props.size * 0.56
@@ -359,8 +362,12 @@ function triggerWakeup() {
   if (wakeupTimer) clearTimeout(wakeupTimer)
   wakeupTimer = setTimeout(() => {
     isWakingUp = false
-    state.value = 'idle'
-    engine.setState('idle', clock)
+    const nextState: StateId =
+      props.musicDancing && !props.isDragging && !props.isMoving
+        ? (props.danceState ?? 'dance')
+        : 'idle'
+    state.value = nextState
+    engine.setState(nextState, clock)
   }, 1350)
 }
 
@@ -380,8 +387,12 @@ function triggerPetReaction() {
     engine.setState('cuddle', clock)
     setTimeout(() => {
       if (state.value === 'cuddle') {
-        state.value = 'idle'
-        engine.setState('idle', clock)
+        const nextState: StateId =
+          props.musicDancing && !props.isDragging && !props.isMoving
+            ? (props.danceState ?? 'dance')
+            : 'idle'
+        state.value = nextState
+        engine.setState(nextState, clock)
       }
     }, 1400)
   }
@@ -464,7 +475,12 @@ function updateGazeAndPhysics(dt: number) {
     lastCursorMove = clock
   }
 
-  if (clock - lastCursorPoll >= CURSOR_POLL) {
+  // Sondeo adaptativo del cursor nativo (reduce llamadas IPC en reposo)
+  const idleSec = clock - lastCursorMove
+  const isSleepingState = state.value === 'sleep' || state.value === 'deepsleep'
+  const currentCursorPoll = isSleepingState ? 0.35 : (idleSec > 2 ? 0.12 : CURSOR_POLL)
+
+  if (clock - lastCursorPoll >= currentCursorPoll) {
     lastCursorPoll = clock
     trackGlobalCursor()
   }
@@ -486,7 +502,6 @@ function updateGazeAndPhysics(dt: number) {
   }
 
   // Désattention contemplative
-  const idleSec = clock - lastCursorMove
   let focus = 1
   let targetX = rawX
   let targetY = rawY
@@ -528,18 +543,26 @@ function updateGazeAndPhysics(dt: number) {
     petLean *= Math.max(0, 1 - 3 * dt)
   }
 
-  // Transmission au moteur
-  engine.setLook(
-    lookTarget({
-      nx: curNx,
-      ny: curNy,
-      tour: state.value === 'dance' ? 0.8 : 1,
-      pointer: !hasDeriva
-    }),
-    clock - 1 / 60,
-    1 / 60
-  )
-  aiming = true
+  // En reposo prolongado y con dirección convergida, evitar recalcular lookTarget continuamente
+  const isAtRest =
+    idleSec > 2.5 &&
+    Math.hypot(pointerVx, pointerVy) < 0.5 &&
+    Math.abs(curNx - targetX) < 0.001 &&
+    Math.abs(curNy - targetY) < 0.001
+
+  if (!isAtRest || !aiming) {
+    engine.setLook(
+      lookTarget({
+        nx: curNx,
+        ny: curNy,
+        tour: isDanceState(state.value) ? 0.8 : 1,
+        pointer: !hasDeriva
+      }),
+      clock - 1 / 60,
+      1 / 60
+    )
+    aiming = true
+  }
 }
 
 /* ------------------------------------------------- Regard scripté d'arrivée */
@@ -568,13 +591,9 @@ watch(
   { immediate: true }
 )
 
-/* ------------------------------------------------- Boucle de rendu (rAF Throttled) */
+/* ------------------------------------------------- Boucle de rendu (rAF Throttled via BotEngine) */
 
-function tick(ms: number) {
-  raf = requestAnimationFrame(tick)
-
-  const dt = last ? Math.min((ms - last) / 1000, 0.064) : 0
-  last = ms
+function tick(dt: number) {
   clock += dt
 
   if (playing.value) {
@@ -596,18 +615,20 @@ function tick(ms: number) {
     reducedMotionQuery.matches ||
     document.documentElement.classList.contains('reduce-motion')
 
-  const targetFps = isReducedMotion ? 12 : (clock - lastCursorMove < 1.0 ? 60 : 30)
+  const isSleepingState = state.value === 'sleep' || state.value === 'deepsleep'
+  const targetFps = isReducedMotion ? 12 : (isSleepingState ? 15 : (clock - lastCursorMove < 1.0 ? 60 : 30))
   const sampleInterval = 1 / targetFps
 
   if (clock - lastSampleClock >= sampleInterval) {
     lastSampleClock = clock
     frame.value = engine.sample(clock)
     triggerRef(frame)
+    // Écritures directes sur le DOM synchronisées avec l'échantillonnage de frame
+    writeDirectDomUpdates()
   }
-
-  // Écritures directes sur le DOM
-  writeDirectDomUpdates()
 }
+
+engine.onPhysicsUpdate = tick
 
 function writeDirectDomUpdates() {
   const body = frame.value.body || { cx: 0, cy: 0, sx: 1, sy: 1 }
@@ -651,18 +672,31 @@ function writeDirectDomUpdates() {
 
   // 3. Rotateur 3D et micro-parallaxe (D2 §6)
   if (rotatorEl.value) {
+    if (props.isDragging) {
+      const flatTransform = 'translate3d(0px, 0px, 0px) scale(1, 1)'
+      if (flatTransform !== lastRotatorTransform) {
+        lastRotatorTransform = flatTransform
+        rotatorEl.value.style.transform = flatTransform
+      }
+      return
+    }
+    const vx = props.movementVelocity?.vx ?? 0
+    const vy = props.movementVelocity?.vy ?? 0
+    const moveLeanDeg = props.isMoving ? clamp(vx * 0.45, -15, 15) : 0
+    const movePitchDeg = props.isMoving ? clamp(vy * -0.3, -12, 12) : 0
+    const moveJelly = props.isMoving ? Math.sin(clock * 18) * Math.min(Math.hypot(vx, vy) * 0.015, 0.08) : 0
+
     const rotY = (curNx * 15).toFixed(2)
-    const rotX = (-curNy * 11).toFixed(2)
+    const rotX = (-curNy * 11 + movePitchDeg).toFixed(2)
     const petLeanDeg = petLean * petIntensity * 5.5
-    const rotZ = (-curNx * curNy * 2.5 + petLeanDeg).toFixed(2)
+    const rotZ = (-curNx * curNy * 2.5 + petLeanDeg + moveLeanDeg).toFixed(2)
     const tx = (curNx * props.size * 0.015).toFixed(2)
     const ty = (curNy * props.size * 0.015).toFixed(2)
-    const tz = (proximity * 10).toFixed(2)
     const purr = props.interactivePet ? Math.sin(clock * 48) * petIntensity * 0.026 : 0
-    const j = (props.interactiveJelly ? jellyPos : 0) + purr
+    const j = (props.interactiveJelly ? jellyPos : 0) + purr + moveJelly
     const sx = ((1 - 0.85 * j) * (1 + 0.04 * proximity)).toFixed(4)
     const sy = ((1 + j) * (1 + 0.04 * proximity)).toFixed(4)
-    const rotatorTransform = `perspective(800px) rotateY(${rotY}deg) rotateX(${rotX}deg) rotateZ(${rotZ}deg) translate3d(${tx}px, ${ty}px, ${tz}px) scale(${sx}, ${sy})`
+    const rotatorTransform = `perspective(800px) rotateY(${rotY}deg) rotateX(${rotX}deg) rotateZ(${rotZ}deg) translate(${tx}px, ${ty}px) scale(${sx}, ${sy})`
 
     if (rotatorTransform !== lastRotatorTransform) {
       lastRotatorTransform = rotatorTransform
@@ -682,9 +716,22 @@ watch(block, (i) => {
   pendingOffset = 0
 })
 
+watch(
+  () => props.isDragging || props.isMoving,
+  (movingOrDragging) => {
+    if (movingOrDragging) {
+      stopDanceImmediately()
+    }
+  }
+)
+
 watch(state, (id) => {
   if (engine.state === id) return
-  engine.setState(id, clock)
+  if (id === 'idle' && (props.isDragging || props.isMoving) && isDanceState(engine.state)) {
+    engine.reset('idle', clock)
+  } else {
+    engine.setState(id, clock)
+  }
   redrawFrozen()
 })
 
@@ -719,13 +766,27 @@ watch(expression, (expr) => {
   redrawFrozen()
 })
 
-watch(() => props.frozenAt, redrawFrozen)
+watch(
+  () => props.frozenAt,
+  (val) => {
+    if (val !== undefined) {
+      engine.pause()
+      redrawFrozen()
+    } else {
+      engine.resume()
+    }
+  }
+)
 
 /* ---------------------------------------------------- Veille automatique (D5 §5) */
 
 let autoSleepInterval: ReturnType<typeof setInterval> | null = null
 
 function checkAutoSleep() {
+  if (props.musicDancing) {
+    lastActivityClock = clock
+    return
+  }
   if (!props.autoSleepEnabled || props.frozenAt !== undefined) return
   if (state.value === 'sleep' || state.value === 'deepsleep' || isWakingUp) return
 
@@ -777,7 +838,15 @@ function triggerCollapse(): Promise<void> {
   })
 }
 
-defineExpose({ seek, rendAt, triggerSpawn, triggerCollapse, setState, triggerPetReaction })
+defineExpose({
+  seek,
+  rendAt,
+  triggerSpawn,
+  triggerCollapse,
+  setState,
+  stopDanceImmediately,
+  triggerPetReaction
+})
 
 const isSleeping = computed(() => {
   return (
@@ -847,25 +916,12 @@ function dotAttrs(dot: BotFrame['dots'][number]) {
     : { ...common, cx: dot.x, cy: dot.y, r: dot.r }
 }
 
-/* ---------------------------------------------------- Portier de visibilité */
-
-function onVisibilityChange() {
-  if (document.hidden) {
-    cancelAnimationFrame(raf)
-    raf = 0
-  } else {
-    if (!raf && props.frozenAt === undefined) {
-      last = 0
-      raf = requestAnimationFrame(tick)
-    }
-  }
-}
-
 onMounted(() => {
   if (props.frozenAt !== undefined) return
 
   apply(block.value, elapsed.value)
-  raf = requestAnimationFrame(tick)
+  engine.initVisibilityGuard()
+  engine.start()
 
   isSpawning.value = true
   spawnTimer = setTimeout(() => {
@@ -879,40 +935,29 @@ onMounted(() => {
 
   // Évaluation de l'auto-veille toutes les 20 secondes
   autoSleepInterval = setInterval(checkAutoSleep, 20000)
-
-  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onBeforeUnmount(() => {
-  if (raf) cancelAnimationFrame(raf)
+  engine.pause()
   if (spawnTimer) clearTimeout(spawnTimer)
   if (collapseTimer) clearTimeout(collapseTimer)
   if (flinchTimer) clearTimeout(flinchTimer)
   if (wakeupTimer) clearTimeout(wakeupTimer)
   if (nightTimer) clearInterval(nightTimer)
   if (autoSleepInterval) clearInterval(autoSleepInterval)
-  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 
 <template>
   <div
-    class="bloub-root relative select-none flex items-center justify-center contain-layout"
+    class="bloub-root relative select-none flex items-center justify-center"
     :style="{
       width: `${props.size}px`,
-      height: `${props.size}px`,
-      perspective: '800px'
+      height: `${props.size}px`
     }"
     @pointermove="handlePointerMoveOnAvatar"
   >
-    <!-- 1. Halo nocturne statique (D2 §9) : 22h-06h, sans filtre coûteux -->
-    <div
-      v-if="isNightHaloVisible"
-      class="bloub-halo pointer-events-none absolute"
-      :style="haloStyle"
-    />
-
-    <!-- 2. Sombra de contacto au sol (D2 §5) -->
+    <!-- Sombra de contacto au sol (D2 §5) -->
     <div
       v-if="props.size >= 56 && props.volumetric"
       ref="groundEl"
@@ -920,11 +965,10 @@ onBeforeUnmount(() => {
       :style="groundStyle"
     />
 
-    <!-- 3. Rotateur 3D avec micro-parallaxe (D2 §6) -->
+    <!-- Rotateur 3D avec micro-parallaxe (D2 §6) -->
     <div
       ref="rotatorEl"
       class="bloub-rotator w-full h-full flex items-center justify-center"
-      style="transform-style: preserve-3d; will-change: transform;"
     >
       <svg
         ref="svg"
@@ -935,19 +979,19 @@ onBeforeUnmount(() => {
         text-rendering="geometricPrecision"
         role="img"
         :aria-label="t('app.botAria')"
-        class="block select-none gpu-composite contain-render"
+        class="block select-none overflow-visible"
       >
         <defs>
           <!-- Masque d'encre unifié (D2 §3) : corps blanc, yeux noirs, encoche noire -->
           <mask
             :id="`mask-${uid}`"
             maskUnits="userSpaceOnUse"
-            :x="-VB"
-            :y="-VB"
-            :width="VB * 2"
-            :height="VB * 2"
+            :x="-VB * 1.5"
+            :y="-VB * 1.5"
+            :width="VB * 3"
+            :height="VB * 3"
           >
-            <rect :x="-VB" :y="-VB" :width="VB * 2" :height="VB * 2" fill="#000" />
+            <rect :x="-VB * 1.5" :y="-VB * 1.5" :width="VB * 3" :height="VB * 3" fill="#000" />
             <path :d="frame.bodyPath" fill="#fff" />
             <g :class="{ 'bb-eyes-awake': isSpawning, 'bb-eyes-collapse': isCollapsing }">
               <path
@@ -1056,6 +1100,16 @@ onBeforeUnmount(() => {
           </component>
         </defs>
 
+        <!-- Superficie base transparente que garantiza la invalidación completa del viewBox en WebView2 -->
+        <rect
+          :x="-VB"
+          :y="-VB"
+          :width="VB * 2"
+          :height="VB * 2"
+          fill="rgba(0,0,0,0)"
+          pointer-events="none"
+        />
+
         <!-- Capa de efectos del Mini Big Bang al aparecer -->
         <g v-if="isSpawning" class="bb-fx-layer pointer-events-none">
           <circle cx="0" cy="0" class="bb-shockwave bb-sw-1" />
@@ -1114,7 +1168,7 @@ onBeforeUnmount(() => {
           </g>
 
           <!-- Particules arrière (ex: burst) -->
-          <g v-if="frame.dotsBehind">
+          <g v-if="frame.dotsBehind && !props.isDragging && !props.isMoving">
             <component
               :is="dot.d ? 'path' : 'circle'"
               v-for="(dot, i) in frame.dots"
@@ -1130,21 +1184,21 @@ onBeforeUnmount(() => {
 
             <!-- 2. Encre masquée avec volume d'ombre et de lumière -->
             <g :mask="`url(#mask-${uid})`">
-              <rect :x="-VB" :y="-VB" :width="VB * 2" :height="VB * 2" :fill="ink" />
+              <rect :x="-VB * 1.5" :y="-VB * 1.5" :width="VB * 3" :height="VB * 3" :fill="ink" />
               <rect
                 v-if="props.volumetric"
-                :x="-VB"
-                :y="-VB"
-                :width="VB * 2"
-                :height="VB * 2"
+                :x="-VB * 1.5"
+                :y="-VB * 1.5"
+                :width="VB * 3"
+                :height="VB * 3"
                 :fill="`url(#shade-${uid})`"
               />
               <rect
                 v-if="props.volumetric"
-                :x="-VB"
-                :y="-VB"
-                :width="VB * 2"
-                :height="VB * 2"
+                :x="-VB * 1.5"
+                :y="-VB * 1.5"
+                :width="VB * 3"
+                :height="VB * 3"
                 :fill="`url(#light-${uid})`"
               />
             </g>
@@ -1154,7 +1208,7 @@ onBeforeUnmount(() => {
           </g>
 
           <!-- Particules avant (notes, cœurs, étincelles, goutte) -->
-          <g v-if="!frame.dotsBehind">
+          <g v-if="!frame.dotsBehind && !props.isDragging && !props.isMoving">
             <component
               :is="dot.d ? 'path' : 'circle'"
               v-for="(dot, i) in frame.dots"
@@ -1228,7 +1282,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .bloub-root {
-  transform-style: preserve-3d;
+  isolation: isolate;
 }
 
 .bloub-ground {

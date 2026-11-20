@@ -9,6 +9,7 @@ static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub enum ActiveView {
     Dashboard,
     Chat,
+    Vault,
 }
 
 /// Representa un espacio de trabajo que agrupa conversaciones y fuentes de contexto.
@@ -49,11 +50,28 @@ pub struct ChatSummary {
     pub is_active: bool,
 }
 
-/// Estado global del tema visual (true = Dark, false = Light)
+/// Preferencia de tema configurada por el usuario (System = sigue a Windows 11)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+/// Preferencia de tema activa en la sesión
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AppThemeMode(pub dioxus::prelude::Signal<ThemePreference>);
+
+/// Estado global del tema visual resuelto (true = Dark, false = Light)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AppTheme(pub dioxus::prelude::Signal<bool>);
 
 /// Control de visibilidad del modal de ajustes de Kyo
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IsSettingsOpen(pub dioxus::prelude::Signal<bool>);
+
+/// Carpeta global de descargas compartida entre vistas y modales
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AppDownloadsDir(pub dioxus::prelude::Signal<std::path::PathBuf>);
 

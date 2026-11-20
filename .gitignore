@@ -15,6 +15,18 @@ dist-ssr/
 **/*.rs.bk
 target/
 sidecar/go-server.exe
+Kyo-agent.exe
+dioxus-chat/Kyo-agent.exe
+src-tauri/Kyo-agent.exe
+
+# Sidecar binaries generados en build
+src-tauri/binaries/*.exe
+src-tauri/binaries/go-server-*
+!src-tauri/binaries/.gitkeep
+
+# Lockfiles duplicados (usar solo pnpm)
+package-lock.json
+yarn.lock
 
 # Tauri generated files
 **/gen/schemas/

@@ -2,9 +2,11 @@
 
 use dioxus::prelude::*;
 use ui::{
-    load_font_family, load_theme_preference, save_theme_preference, spawn_sidecar_service,
-    terminate_sidecar, ActiveView, AppFont, AppTheme, IsSettingsOpen, ChatContainer, Dashboard, KyoCloud,
-    SettingsModal, Sidebar, SidecarState, Workspace,
+    detect_windows_theme_is_dark, load_font_family, load_theme_mode, load_theme_preference,
+    load_downloads_dir, spawn_music_monitor, spawn_sidecar_service, terminate_sidecar, ActiveView,
+    AppDownloadsDir, AppFont, AppTheme, AppThemeMode, ChatContainer, Dashboard, IsSettingsOpen,
+    KyoCloud, MusicContext, SettingsModal, SettingsTab, Sidebar, SidecarState, ThemePreference,
+    VaultView, Workspace,
 };
 
 
@@ -34,7 +36,8 @@ fn main() {
             .with_resizable(true)
             .with_always_on_top(false)
             .with_inner_size(LogicalSize::new(1200.0, 800.0))
-            .with_position(LogicalPosition::new(100.0, 100.0));
+            .with_position(LogicalPosition::new(100.0, 100.0))
+            .with_maximized(true);
 
         let mut custom_head = String::with_capacity(MAIN_CSS.len() + CHAT_CSS.len() + 256);
         custom_head.push_str("<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<style id=\"main-css\">\n");
@@ -52,16 +55,12 @@ fn main() {
             .with_background_color(initial_bg)
             .with_custom_head(custom_head)
             .with_on_window(|window, _dom| {
-                // Dynamically center window on screen if monitor info is available
-                if let Some(monitor) = window.current_monitor().or_else(|| window.primary_monitor()) {
-                    let screen_size = monitor.size();
-                    let window_size = window.outer_size();
-                    let x = ((screen_size.width as i32 - window_size.width as i32) / 2).max(50);
-                    let y = ((screen_size.height as i32 - window_size.height as i32) / 2).max(50);
-                    window.set_outer_position(dioxus::desktop::tao::dpi::PhysicalPosition::new(x, y));
-                }
+                // Abrir siempre en modo ventana completa (maximizada) y nunca minimizada
                 window.set_minimized(false);
                 window.set_visible(true);
+                if !window.is_maximized() {
+                    window.set_maximized(true);
+                }
                 window.set_focus();
             });
 
@@ -80,7 +79,7 @@ fn main() {
 fn TitleBar() -> Element {
     #[cfg(feature = "desktop")]
     {
-        let mut is_max = use_signal(|| false);
+        let mut is_max = use_signal(|| dioxus::desktop::window().is_maximized());
 
         rsx! {
             header {
@@ -199,10 +198,14 @@ fn App() -> Element {
     // Estado compartido de la conexión con Kyō Web (Dashboard ↔ Sidebar); sobrevive al cambio de vista
     let _kyo_cloud = use_context_provider(KyoCloud::new);
     let is_settings_open = use_context_provider(|| IsSettingsOpen(Signal::new(false)));
+    let _settings_target_tab = use_context_provider(|| Signal::new(Option::<SettingsTab>::None));
+    let _downloads_dir = use_context_provider(|| AppDownloadsDir(Signal::new(load_downloads_dir())));
     let sidecar_state = use_context_provider(|| Signal::new(SidecarState::default()));
+    let music_ctx = use_context_provider(MusicContext::new);
     let app_font = use_context_provider(|| AppFont(Signal::new(load_font_family())));
-    // Theme state: true = dark (default), false = light, persisted across sessions
-    let app_theme = use_context_provider(|| AppTheme(Signal::new(load_theme_preference())));
+    // Theme state: follows Windows 11 system theme by default, or explicit user override
+    let app_theme_mode = use_context_provider(|| AppThemeMode(Signal::new(load_theme_mode())));
+    let mut app_theme = use_context_provider(|| AppTheme(Signal::new(load_theme_preference())));
     let is_dark = *app_theme.0.read();
     let theme_class = if is_dark { "dark" } else { "light" };
 
@@ -260,7 +263,6 @@ fn App() -> Element {
 
     use_effect(move || {
         let is_dark = *app_theme.0.read();
-        let _ = save_theme_preference(is_dark);
         #[cfg(feature = "desktop")]
         {
             let class_op = if is_dark { "remove" } else { "add" };
@@ -274,9 +276,26 @@ fn App() -> Element {
         }
     });
 
-    // Iniciar el microservicio Go Server en segundo plano de manera no bloqueante
-    use_hook(|| {
+    // Sincronización en vivo con el tema de Windows 11 cuando el modo está en Sistema
+    #[cfg(feature = "desktop")]
+    use_hook(move || {
+        spawn(async move {
+            loop {
+                ui::sleep_secs(2).await;
+                if *app_theme_mode.0.read() == ThemePreference::System {
+                    let win_is_dark = detect_windows_theme_is_dark();
+                    if *app_theme.0.read() != win_is_dark {
+                        app_theme.0.set(win_is_dark);
+                    }
+                }
+            }
+        });
+    });
+
+    // Iniciar el microservicio Go Server y el detector musical en segundo plano de manera no bloqueante
+    use_hook(move || {
         spawn_sidecar_service(sidecar_state);
+        spawn_music_monitor(music_ctx);
     });
 
     rsx! {
@@ -295,6 +314,7 @@ fn App() -> Element {
                     match *active_view.read() {
                         ActiveView::Dashboard => rsx! { Dashboard {} },
                         ActiveView::Chat => rsx! { ChatContainer {} },
+                        ActiveView::Vault => rsx! { VaultView {} },
                     }
                 }
             }

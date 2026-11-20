@@ -7,6 +7,8 @@
 //! - Conmutador de tema visual.
 
 use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 use dioxus::prelude::*;
 use crate::sidecar::{check_cloud_health, check_sidecar_health, SidecarConnectionStatus, SidecarState};
 
@@ -17,54 +19,444 @@ pub enum SettingsTab {
     About,
 }
 
-/// Guarda el token y URL del servidor en memoria y en %APPDATA%/kyo/session.json.
-pub fn save_auth_config(token: &str, server_url: &str) -> Result<(), String> {
-    let trimmed_token = token.trim().to_string();
-    let trimmed_url = server_url.trim().to_string();
+// ── Clientes HTTP globales con Connection Pooling, TLS 1.2+ y Anti-Redirect-Leak ──
 
-    std::env::set_var("KYO_AUTH_TOKEN", &trimmed_token);
-    if !trimmed_url.is_empty() {
-        std::env::set_var("KYO_UPSTREAM", &trimmed_url);
-        std::env::set_var("KYO_SERVER_URL", &trimmed_url);
-    }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let kyo_dir = PathBuf::from(appdata).join("kyo");
-        let _ = std::fs::create_dir_all(&kyo_dir);
-        let session_file = kyo_dir.join("session.json");
-
-        let mut map: serde_json::Map<String, serde_json::Value> = if session_file.is_file() {
-            std::fs::read_to_string(&session_file)
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_default()
-        } else {
-            serde_json::Map::new()
-        };
-
-        map.insert("token".to_string(), serde_json::Value::String(trimmed_token));
-        if !trimmed_url.is_empty() {
-            map.insert("server_url".to_string(), serde_json::Value::String(trimmed_url));
+fn build_secure_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 4 {
+            return attempt.error("Demasiadas redirecciones HTTP");
         }
-        map.insert(
-            "updated_at".to_string(),
-            serde_json::json!(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-            ),
-        );
+        let target = attempt.url();
+        if let Some(first) = attempt.previous().first() {
+            // Bloquear downgrade de HTTPS a HTTP
+            if first.scheme() == "https" && target.scheme() != "https" {
+                return attempt.error("Redirección insegura bloqueada (downgrade HTTPS -> HTTP)");
+            }
+            // Bloquear redirecciones a otro dominio/host para no filtrar el header Authorization Bearer
+            if first.host_str() != target.host_str() || first.port_or_known_default() != target.port_or_known_default() {
+                return attempt.stop();
+            }
+        }
+        attempt.follow()
+    })
+}
 
-        std::fs::write(&session_file, serde_json::Value::Object(map).to_string())
-            .map_err(|e| format!("Error guardando session.json: {e}"))?;
+/// Cliente HTTP global de baja latencia para sondas de conexión y autenticación (Keep-Alive + TCP_NODELAY).
+pub fn shared_probe_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_millis(4000))
+            .connect_timeout(Duration::from_millis(2500))
+            .tcp_nodelay(true)
+            .tcp_keepalive(Duration::from_secs(30))
+            .pool_max_idle_per_host(12)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .redirect(build_secure_redirect_policy())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+/// Cliente HTTP global reutilizable para consultas a la API de Kyō (Bóvedas, Espacios, Metadatos).
+pub fn shared_api_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_millis(7500))
+            .connect_timeout(Duration::from_millis(3000))
+            .tcp_nodelay(true)
+            .tcp_keepalive(Duration::from_secs(30))
+            .pool_max_idle_per_host(12)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .redirect(build_secure_redirect_policy())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+/// Cliente HTTP global reutilizable para streaming SSE de IA y descarga de archivos.
+pub fn shared_stream_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_millis(3500))
+            .tcp_nodelay(true)
+            .tcp_keepalive(Duration::from_secs(30))
+            .pool_max_idle_per_host(8)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .redirect(build_secure_redirect_policy())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+// ── Cifrado en Reposo con Windows DPAPI (CryptProtectData / CryptUnprotectData) ──
+
+const DPAPI_PREFIX: &str = "dpapi:v1:";
+const DPAPI_ENTROPY: &[u8] = b"KyoDesktopTokenSecurityV1";
+
+#[cfg(windows)]
+mod win_dpapi {
+    use super::DPAPI_ENTROPY;
+
+    #[repr(C)]
+    struct DataBlob {
+        cb_data: u32,
+        pb_data: *mut u8,
     }
 
+    const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
+
+    #[link(name = "crypt32")]
+    extern "system" {
+        fn CryptProtectData(
+            pDataIn: *const DataBlob,
+            szDataDescr: *const u16,
+            pOptionalEntropy: *const DataBlob,
+            pvReserved: *mut std::ffi::c_void,
+            pPromptStruct: *mut std::ffi::c_void,
+            dwFlags: u32,
+            pDataOut: *mut DataBlob,
+        ) -> i32;
+
+        fn CryptUnprotectData(
+            pDataIn: *const DataBlob,
+            ppszDataDescr: *mut *mut u16,
+            pOptionalEntropy: *const DataBlob,
+            pvReserved: *mut std::ffi::c_void,
+            pPromptStruct: *mut std::ffi::c_void,
+            dwFlags: u32,
+            pDataOut: *mut DataBlob,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    pub fn protect(plaintext: &[u8]) -> Option<Vec<u8>> {
+        if plaintext.is_empty() {
+            return Some(Vec::new());
+        }
+        unsafe {
+            let in_blob = DataBlob {
+                cb_data: plaintext.len() as u32,
+                pb_data: plaintext.as_ptr() as *mut u8,
+            };
+            let entropy_blob = DataBlob {
+                cb_data: DPAPI_ENTROPY.len() as u32,
+                pb_data: DPAPI_ENTROPY.as_ptr() as *mut u8,
+            };
+            let mut out_blob = DataBlob {
+                cb_data: 0,
+                pb_data: std::ptr::null_mut(),
+            };
+            let ok = CryptProtectData(
+                &in_blob,
+                std::ptr::null(),
+                &entropy_blob,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out_blob,
+            );
+            if ok == 0 || out_blob.pb_data.is_null() {
+                return None;
+            }
+            let slice = std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize);
+            let result = slice.to_vec();
+            LocalFree(out_blob.pb_data as *mut std::ffi::c_void);
+            Some(result)
+        }
+    }
+
+    pub fn unprotect(ciphertext: &[u8]) -> Option<Vec<u8>> {
+        if ciphertext.is_empty() {
+            return Some(Vec::new());
+        }
+        unsafe {
+            let in_blob = DataBlob {
+                cb_data: ciphertext.len() as u32,
+                pb_data: ciphertext.as_ptr() as *mut u8,
+            };
+            let entropy_blob = DataBlob {
+                cb_data: DPAPI_ENTROPY.len() as u32,
+                pb_data: DPAPI_ENTROPY.as_ptr() as *mut u8,
+            };
+            let mut out_blob = DataBlob {
+                cb_data: 0,
+                pb_data: std::ptr::null_mut(),
+            };
+            let ok = CryptUnprotectData(
+                &in_blob,
+                std::ptr::null_mut(),
+                &entropy_blob,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out_blob,
+            );
+            if ok == 0 || out_blob.pb_data.is_null() {
+                return None;
+            }
+            let slice = std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize);
+            let result = slice.to_vec();
+            // Limpiar memoria sensible antes de liberar el buffer de Win32
+            std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
+            LocalFree(out_blob.pb_data as *mut std::ffi::c_void);
+            Some(result)
+        }
+    }
+}
+
+/// Cifra un token para almacenamiento seguro en disco (DPAPI en Windows).
+pub fn encrypt_token_for_storage(raw_token: &str) -> String {
+    let clean = sanitize_token(raw_token);
+    if clean.is_empty() {
+        return String::new();
+    }
+    #[cfg(windows)]
+    {
+        use base64::engine::general_purpose::STANDARD_NO_PAD;
+        use base64::Engine;
+        if let Some(encrypted) = win_dpapi::protect(clean.as_bytes()) {
+            return format!("{DPAPI_PREFIX}{}", STANDARD_NO_PAD.encode(encrypted));
+        }
+    }
+    clean
+}
+
+/// Descifra un token leído desde session.json (compatible con `dpapi:v1:` y texto plano legado).
+pub fn decrypt_token_from_storage(stored: &str) -> String {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(b64) = trimmed.strip_prefix(DPAPI_PREFIX) {
+        #[cfg(windows)]
+        {
+            use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+            use base64::Engine;
+            if let Ok(bytes) = STANDARD_NO_PAD.decode(b64).or_else(|_| STANDARD.decode(b64)) {
+                if let Some(plain_bytes) = win_dpapi::unprotect(&bytes) {
+                    if let Ok(s) = String::from_utf8(plain_bytes) {
+                        return sanitize_token(&s);
+                    }
+                }
+            }
+        }
+        return String::new();
+    }
+    sanitize_token(trimmed)
+}
+
+// ── Caché en Memoria de Ultra-Baja Latencia para Sesión (0ms Disk I/O) ──────
+
+#[derive(Clone, Debug, Default)]
+struct CachedSession {
+    token: String,
+    server_url: String,
+    username: Option<String>,
+    email: Option<String>,
+    active_profile_name: Option<String>,
+    active_profile_id: Option<String>,
+    downloads_dir: Option<PathBuf>,
+    file_mtime: Option<SystemTime>,
+    last_checked: Option<Instant>,
+}
+
+static SESSION_CACHE: OnceLock<RwLock<CachedSession>> = OnceLock::new();
+
+fn get_kyo_session_file_path() -> Option<PathBuf> {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return Some(PathBuf::from(appdata).join("kyo").join("session.json"));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("kyo").join("session.json"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(PathBuf::from(home).join(".config").join("kyo").join("session.json"));
+    }
+    None
+}
+
+/// Escritura atómica mediante archivo temporal para evitar corrupción en lecturas concurrentes.
+fn write_json_atomic(target: &std::path::Path, content: &str) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp_path = target.with_extension("json.tmp");
+    std::fs::write(&tmp_path, content).map_err(|e| format!("Error escribiendo archivo temporal: {e}"))?;
+    if std::fs::rename(&tmp_path, target).is_err() {
+        std::fs::write(target, content).map_err(|e| format!("Error guardando session.json: {e}"))?;
+        let _ = std::fs::remove_file(&tmp_path);
+    }
     Ok(())
 }
 
-/// Guarda la configuración completa de sesión en memoria y en %APPDATA%/kyo/session.json.
+fn read_or_refresh_session_cache() -> CachedSession {
+    let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
+
+    // Fast path: si la caché fue verificada hace menos de 800ms, devolver en <100ns sin tocar disco
+    if let Ok(guard) = lock.read() {
+        if let Some(last) = guard.last_checked {
+            if last.elapsed() < Duration::from_millis(800) {
+                return guard.clone();
+            }
+        }
+    }
+
+    let session_file = match get_kyo_session_file_path() {
+        Some(p) => p,
+        None => return CachedSession::default(),
+    };
+
+    let current_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+
+    // Si el mtime en disco no ha cambiado, solo actualizar `last_checked` y retornar la caché actual
+    if let Ok(mut guard) = lock.write() {
+        if guard.last_checked.is_some() && guard.file_mtime == current_mtime {
+            guard.last_checked = Some(Instant::now());
+            return guard.clone();
+        }
+
+        let mut next = CachedSession {
+            server_url: "https://kyo.broco.dev".to_string(),
+            file_mtime: current_mtime,
+            last_checked: Some(Instant::now()),
+            ..Default::default()
+        };
+
+        let mut needs_dpapi_upgrade = false;
+        let mut parsed_map: Option<serde_json::Map<String, serde_json::Value>> = None;
+
+        if session_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&session_file) {
+                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(raw_tok) = map.get("token").or_else(|| map.get("access_token")).and_then(|t| t.as_str()) {
+                        let trimmed = raw_tok.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with(DPAPI_PREFIX) {
+                            needs_dpapi_upgrade = true;
+                        }
+                        next.token = decrypt_token_from_storage(trimmed);
+                    }
+                    if let Some(u) = map.get("server_url").or_else(|| map.get("upstream")).and_then(|v| v.as_str()) {
+                        let tu = u.trim();
+                        if !tu.is_empty() {
+                            next.server_url = tu.to_string();
+                        }
+                    }
+                    next.username = map.get("username").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    next.email = map.get("email").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    next.active_profile_name = map.get("active_profile_name").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    next.active_profile_id = map.get("active_profile_id").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    next.downloads_dir = map.get("downloads_dir").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()).map(PathBuf::from);
+                    parsed_map = Some(map);
+                }
+            }
+        }
+
+        // Fallback inicial a variables de entorno si session.json aún no tenía datos
+        if next.token.is_empty() {
+            if let Ok(env_tok) = std::env::var("KYO_AUTH_TOKEN") {
+                next.token = decrypt_token_from_storage(&env_tok);
+            }
+        }
+        if next.server_url == "https://kyo.broco.dev" {
+            if let Ok(env_url) = std::env::var("KYO_UPSTREAM").or_else(|_| std::env::var("KYO_SERVER_URL")) {
+                let tu = env_url.trim();
+                if !tu.is_empty() {
+                    next.server_url = tu.to_string();
+                }
+            }
+        }
+
+        // Migrar automáticamente tokens legados en texto plano a formato cifrado DPAPI en disco
+        if needs_dpapi_upgrade && !next.token.is_empty() {
+            if let Some(mut map) = parsed_map {
+                let enc = encrypt_token_for_storage(&next.token);
+                if enc.starts_with(DPAPI_PREFIX) {
+                    map.insert("token".to_string(), serde_json::Value::String(enc));
+                    map.remove("access_token");
+                    let _ = write_json_atomic(&session_file, &serde_json::Value::Object(map).to_string());
+                    next.file_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+                }
+            }
+        }
+
+        *guard = next.clone();
+        return next;
+    }
+
+    CachedSession::default()
+}
+
+/// Sanitiza un token eliminando comillas envolventes, prefijo "Bearer " y caracteres de control/CRLF.
+pub fn sanitize_token(token: &str) -> String {
+    let mut t = token.trim();
+    if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        if t.len() >= 2 {
+            t = t[1..t.len() - 1].trim();
+        }
+    }
+    if t.len() >= 7 && t[..7].eq_ignore_ascii_case("bearer ") {
+        t = t[7..].trim();
+    }
+    if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        if t.len() >= 2 {
+            t = t[1..t.len() - 1].trim();
+        }
+    }
+    t.chars()
+        .filter(|c| !c.is_control() && !c.is_whitespace())
+        .collect()
+}
+
+/// Valida la seguridad estructural y criptográfica de un token antes de enviarlo por red.
+pub fn validate_token_security(raw_token: &str) -> Result<String, String> {
+    let clean = sanitize_token(raw_token);
+    if clean.is_empty() {
+        return Err("No se ha ingresado ningún Token Key. Ingrese su token para conectar.".to_string());
+    }
+    if clean.len() < 16 {
+        return Err("El token ingresado es demasiado corto para ser un Token Key o JWT válido.".to_string());
+    }
+    if clean.len() > 4096 {
+        return Err("El token excede la longitud máxima permitida (4096 caracteres).".to_string());
+    }
+    if !clean.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '=' | '+' | '/')) {
+        return Err("El token contiene caracteres no válidos o potencialmente inseguros.".to_string());
+    }
+    if clean.starts_with("kyo_mcp_") {
+        let suffix = &clean["kyo_mcp_".len()..];
+        if suffix.len() < 16 {
+            return Err("El Token MCP (kyo_mcp_...) está incompleto.".to_string());
+        }
+        return Ok(clean);
+    }
+    if let Some(analysis) = analyze_token(&clean) {
+        if analysis.alg.as_deref().map(|a| a.eq_ignore_ascii_case("none")).unwrap_or(false) {
+            return Err("Token inseguro rechazado: algoritmo 'none' no permitido (RFC 7519).".to_string());
+        }
+        if analysis.is_expired {
+            return Err(analysis.warning.unwrap_or_else(|| "El token JWT ha expirado.".to_string()));
+        }
+    }
+    Ok(clean)
+}
+
+/// Guarda el token y URL del servidor en memoria y cifrado con DPAPI en %APPDATA%/kyo/session.json.
+pub fn save_auth_config(token: &str, server_url: &str) -> Result<(), String> {
+    save_full_session_config(token, server_url, None, None, None, None)
+}
+
+/// Guarda la configuración completa de sesión en memoria y cifrada con DPAPI en %APPDATA%/kyo/session.json.
 pub fn save_full_session_config(
     token: &str,
     server_url: &str,
@@ -73,39 +465,11 @@ pub fn save_full_session_config(
     profile_name: Option<&str>,
     profile_id: Option<&str>,
 ) -> Result<(), String> {
-    let trimmed_token = token.trim().to_string();
+    let trimmed_token = sanitize_token(token);
     let trimmed_url = server_url.trim().to_string();
+    let encrypted_token = encrypt_token_for_storage(&trimmed_token);
 
-    std::env::set_var("KYO_AUTH_TOKEN", &trimmed_token);
-    if !trimmed_url.is_empty() {
-        std::env::set_var("KYO_UPSTREAM", &trimmed_url);
-        std::env::set_var("KYO_SERVER_URL", &trimmed_url);
-    }
-    if let Some(u) = username {
-        let tu = u.trim();
-        if !tu.is_empty() {
-            std::env::set_var("KYO_USERNAME", tu);
-        }
-    }
-    if let Some(p) = profile_name {
-        let tp = p.trim();
-        if !tp.is_empty() {
-            std::env::set_var("KYO_ACTIVE_PROFILE_NAME", tp);
-        }
-    }
-    if let Some(pid) = profile_id {
-        let tpid = pid.trim();
-        if !tpid.is_empty() {
-            std::env::set_var("KYO_ACTIVE_PROFILE_ID", tpid);
-        }
-    }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let kyo_dir = PathBuf::from(appdata).join("kyo");
-        let _ = std::fs::create_dir_all(&kyo_dir);
-        let session_file = kyo_dir.join("session.json");
-
+    if let Some(session_file) = get_kyo_session_file_path() {
         let mut map: serde_json::Map<String, serde_json::Value> = if session_file.is_file() {
             std::fs::read_to_string(&session_file)
                 .ok()
@@ -115,9 +479,10 @@ pub fn save_full_session_config(
             serde_json::Map::new()
         };
 
-        map.insert("token".to_string(), serde_json::Value::String(trimmed_token));
+        map.insert("token".to_string(), serde_json::Value::String(encrypted_token));
+        map.remove("access_token");
         if !trimmed_url.is_empty() {
-            map.insert("server_url".to_string(), serde_json::Value::String(trimmed_url));
+            map.insert("server_url".to_string(), serde_json::Value::String(trimmed_url.clone()));
         }
         if let Some(u) = username {
             if !u.trim().is_empty() {
@@ -142,31 +507,47 @@ pub fn save_full_session_config(
         map.insert(
             "updated_at".to_string(),
             serde_json::json!(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0)
             ),
         );
 
-        std::fs::write(&session_file, serde_json::Value::Object(map).to_string())
-            .map_err(|e| format!("Error guardando session.json: {e}"))?;
+        write_json_atomic(&session_file, &serde_json::Value::Object(map).to_string())?;
+        let new_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+
+        let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
+        if let Ok(mut guard) = lock.write() {
+            guard.token = trimmed_token;
+            if !trimmed_url.is_empty() {
+                guard.server_url = trimmed_url;
+            } else if guard.server_url.is_empty() {
+                guard.server_url = "https://kyo.broco.dev".to_string();
+            }
+            if let Some(u) = username.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                guard.username = Some(u.to_string());
+            }
+            if let Some(e) = email.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                guard.email = Some(e.to_string());
+            }
+            if let Some(p) = profile_name.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                guard.active_profile_name = Some(p.to_string());
+            }
+            if let Some(pid) = profile_id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                guard.active_profile_id = Some(pid.to_string());
+            }
+            guard.file_mtime = new_mtime;
+            guard.last_checked = Some(Instant::now());
+        }
     }
 
     Ok(())
 }
 
-/// Limpia la sesión de autenticación (elimina el token y datos de usuario).
+/// Limpia la sesión de autenticación (elimina el token en memoria y en disco).
 pub fn clear_session_auth() -> Result<(), String> {
-    std::env::remove_var("KYO_AUTH_TOKEN");
-    std::env::remove_var("KYO_USERNAME");
-    std::env::remove_var("KYO_ACTIVE_PROFILE_NAME");
-    std::env::remove_var("KYO_ACTIVE_PROFILE_ID");
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let kyo_dir = PathBuf::from(appdata).join("kyo");
-        let session_file = kyo_dir.join("session.json");
+    if let Some(session_file) = get_kyo_session_file_path() {
         if session_file.is_file() {
             let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&session_file)
                 .ok()
@@ -178,145 +559,213 @@ pub fn clear_session_auth() -> Result<(), String> {
             map.remove("email");
             map.remove("active_profile_name");
             map.remove("active_profile_id");
-            let _ = std::fs::write(&session_file, serde_json::Value::Object(map).to_string());
+            let _ = write_json_atomic(&session_file, &serde_json::Value::Object(map).to_string());
+        }
+        let new_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+        let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
+        if let Ok(mut guard) = lock.write() {
+            guard.token.clear();
+            guard.username = None;
+            guard.email = None;
+            guard.active_profile_name = None;
+            guard.active_profile_id = None;
+            guard.file_mtime = new_mtime;
+            guard.last_checked = Some(Instant::now());
         }
     }
     Ok(())
 }
 
-/// Guarda el token en memoria y en %APPDATA%/kyo/session.json.
+/// Guarda el token en memoria y cifrado en %APPDATA%/kyo/session.json.
 pub fn save_auth_token(token: &str) -> Result<(), String> {
     save_auth_config(token, "")
 }
 
-/// Recupera la URL del servidor remoto guardada.
+/// Recupera la URL del servidor remoto guardada desde la caché en memoria.
 pub fn load_server_url() -> String {
-    if let Ok(url) = std::env::var("KYO_UPSTREAM").or_else(|_| std::env::var("KYO_SERVER_URL")) {
-        let trimmed = url.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed;
-        }
+    let cached = read_or_refresh_session_cache();
+    if !cached.server_url.is_empty() {
+        cached.server_url
+    } else {
+        "https://kyo.broco.dev".to_string()
     }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_file = PathBuf::from(appdata).join("kyo").join("session.json");
-        if session_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&session_file) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(u) = json.get("server_url").or_else(|| json.get("upstream")).and_then(|t| t.as_str()) {
-                        return u.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    "https://kyo.broco.dev".to_string()
 }
 
-/// Recupera el token guardado en el archivo session.json o variable de entorno.
+/// Recupera el token descifrado desde la caché en memoria o session.json.
 pub fn load_auth_token() -> String {
-    if let Ok(token) = std::env::var("KYO_AUTH_TOKEN") {
-        let trimmed = token.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed;
-        }
-    }
-
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_file = PathBuf::from(appdata).join("kyo").join("session.json");
-        if session_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&session_file) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(t) = json.get("token").and_then(|t| t.as_str()) {
-                        return t.to_string();
-                    }
-                    if let Some(t) = json.get("access_token").and_then(|t| t.as_str()) {
-                        return t.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    String::new()
+    read_or_refresh_session_cache().token
 }
 
-/// Recupera el nombre del perfil activo guardado en session.json o variable de entorno.
+/// Recupera el nombre del perfil activo guardado en session.json o caché en memoria.
 pub fn load_active_profile_name() -> Option<String> {
-    if let Ok(name) = std::env::var("KYO_ACTIVE_PROFILE_NAME") {
-        let trimmed = name.trim().to_string();
-        if !trimmed.is_empty() {
-            return Some(trimmed);
-        }
-    }
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_file = PathBuf::from(appdata).join("kyo").join("session.json");
-        if session_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&session_file) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(n) = json.get("active_profile_name").and_then(|t| t.as_str()) {
-                        let trimmed = n.trim().to_string();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    read_or_refresh_session_cache().active_profile_name
 }
 
-/// Recupera el nombre de usuario de la cuenta guardado en session.json o variable de entorno.
+/// Recupera el nombre de usuario de la cuenta guardado en session.json o caché en memoria.
 pub fn load_username() -> Option<String> {
-    if let Ok(name) = std::env::var("KYO_USERNAME") {
-        let trimmed = name.trim().to_string();
-        if !trimmed.is_empty() {
-            return Some(trimmed);
-        }
-    }
-    #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_file = PathBuf::from(appdata).join("kyo").join("session.json");
-        if session_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&session_file) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(u) = json.get("username").and_then(|t| t.as_str()) {
-                        let trimmed = u.trim().to_string();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    read_or_refresh_session_cache().username
 }
 
-/// Recupera el correo de la cuenta guardado en session.json.
+/// Recupera el correo de la cuenta guardado en session.json o caché en memoria.
 pub fn load_email() -> Option<String> {
+    read_or_refresh_session_cache().email
+}
+
+/// Obtiene el directorio de descargas predeterminado del sistema operativo.
+pub fn get_default_os_downloads_dir() -> PathBuf {
     #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let session_file = PathBuf::from(appdata).join("kyo").join("session.json");
+    {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let p = PathBuf::from(userprofile).join("Downloads");
+            return p;
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let p = PathBuf::from(home).join("Downloads");
+            return p;
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// Recupera la carpeta de descargas configurada por el usuario en session.json o la predeterminada del SO.
+pub fn load_downloads_dir() -> PathBuf {
+    if let Some(dir) = read_or_refresh_session_cache().downloads_dir {
+        return dir;
+    }
+    get_default_os_downloads_dir()
+}
+
+/// Guarda la carpeta de descargas configurada en session.json.
+pub fn save_downloads_dir(path: &std::path::Path) -> Result<(), String> {
+    let p_str = path.to_string_lossy().to_string();
+    if let Some(session_file) = get_kyo_session_file_path() {
+        let mut map: serde_json::Map<String, serde_json::Value> = if session_file.is_file() {
+            std::fs::read_to_string(&session_file)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+
+        map.insert("downloads_dir".to_string(), serde_json::Value::String(p_str));
+        write_json_atomic(&session_file, &serde_json::Value::Object(map).to_string())?;
+        let new_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+        let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
+        if let Ok(mut guard) = lock.write() {
+            guard.downloads_dir = Some(path.to_path_buf());
+            guard.file_mtime = new_mtime;
+            guard.last_checked = Some(Instant::now());
+        }
+    }
+    Ok(())
+}
+
+/// Restablece la carpeta de descargas a la predeterminada del sistema.
+pub fn reset_downloads_dir() -> Result<PathBuf, String> {
+    if let Some(session_file) = get_kyo_session_file_path() {
         if session_file.is_file() {
             if let Ok(content) = std::fs::read_to_string(&session_file) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(e) = json.get("email").and_then(|t| t.as_str()) {
-                        let trimmed = e.trim().to_string();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed);
-                        }
+                if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(map) = json.as_object_mut() {
+                        map.remove("downloads_dir");
+                        let _ = write_json_atomic(&session_file, &json.to_string());
                     }
                 }
             }
         }
+        let new_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+        let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
+        if let Ok(mut guard) = lock.write() {
+            guard.downloads_dir = None;
+            guard.file_mtime = new_mtime;
+            guard.last_checked = Some(Instant::now());
+        }
     }
-    None
+    Ok(get_default_os_downloads_dir())
+}
+
+/// Abre una ruta (archivo o carpeta) en la aplicación de explorador de archivos predeterminada del sistema operativo.
+pub fn open_path_in_explorer(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::process::CommandExt;
+
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut std::ffi::c_void,
+                lp_operation: *const u16,
+                lp_file: *const u16,
+                lp_parameters: *const u16,
+                lp_directory: *const u16,
+                n_show_cmd: i32,
+            ) -> isize;
+        }
+
+        let target = if path.exists() {
+            path.to_path_buf()
+        } else if path.extension().is_none() && std::fs::create_dir_all(path).is_ok() {
+            path.to_path_buf()
+        } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
+            parent.to_path_buf()
+        } else {
+            get_default_os_downloads_dir()
+        };
+
+        if target.is_dir() {
+            // Invocar ShellExecuteW con operación por defecto (NULL) sobre la carpeta para respetar
+            // el explorador de archivos predeterminado elegido por el usuario (Files, OneCommander, Explorer, etc.).
+            let wide_path: Vec<u16> = target
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let res = unsafe {
+                ShellExecuteW(
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    wide_path.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    1, // SW_SHOWNORMAL
+                )
+            };
+            if res <= 32 {
+                let _ = std::process::Command::new("explorer.exe")
+                    .arg(target.as_os_str())
+                    .spawn();
+            }
+        } else {
+            let p_str = target.to_string_lossy();
+            let raw = format!("/select,\"{p_str}\"");
+            let _ = std::process::Command::new("explorer.exe")
+                .raw_arg(&raw)
+                .spawn();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let target = if path.exists() {
+            if path.is_dir() { path } else { path.parent().unwrap_or(path) }
+        } else {
+            &get_default_os_downloads_dir()
+        };
+        let _ = std::process::Command::new("open").arg(target).spawn();
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let target = if path.exists() {
+            if path.is_dir() { path } else { path.parent().unwrap_or(path) }
+        } else {
+            &get_default_os_downloads_dir()
+        };
+        let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -332,9 +781,29 @@ pub struct JwtAnalysis {
 }
 
 pub fn analyze_token(raw: &str) -> Option<JwtAnalysis> {
-    let trimmed = raw.trim();
+    let trimmed = sanitize_token(raw);
     if trimmed.is_empty() {
         return None;
+    }
+
+    if trimmed.starts_with("kyo_mcp_") {
+        let suffix = &trimmed["kyo_mcp_".len()..];
+        let is_valid_mcp = suffix.len() >= 16
+            && suffix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        return Some(JwtAnalysis {
+            is_jwt: false,
+            is_expired: false,
+            expires_in_sec: None,
+            expiration_str: Some("Token MCP de larga duración (Cifrado DPAPI)".to_string()),
+            sub: None,
+            role: Some("mcp".to_string()),
+            alg: Some("API-KEY (SHA-256)".to_string()),
+            warning: if is_valid_mcp {
+                None
+            } else {
+                Some("El Token MCP parece estar incompleto o truncado.".to_string())
+            },
+        });
     }
 
     let parts: Vec<&str> = trimmed.split('.').collect();
@@ -351,6 +820,19 @@ pub fn analyze_token(raw: &str) -> Option<JwtAnalysis> {
         });
     }
 
+    if parts[2].trim().is_empty() {
+        return Some(JwtAnalysis {
+            is_jwt: true,
+            is_expired: false,
+            expires_in_sec: None,
+            expiration_str: None,
+            sub: None,
+            role: None,
+            alg: Some("unsigned".into()),
+            warning: Some("Vulnerabilidad de seguridad: el JWT carece de firma criptográfica".into()),
+        });
+    }
+
     use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
     use base64::Engine;
 
@@ -363,7 +845,7 @@ pub fn analyze_token(raw: &str) -> Option<JwtAnalysis> {
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         .and_then(|v| v.get("alg").and_then(|a| a.as_str()).map(|s| s.to_string()));
 
-    if alg.as_deref() == Some("none") {
+    if alg.as_deref().map(|a| a.eq_ignore_ascii_case("none")).unwrap_or(true) {
         return Some(JwtAnalysis {
             is_jwt: true,
             is_expired: false,
@@ -386,6 +868,7 @@ pub fn analyze_token(raw: &str) -> Option<JwtAnalysis> {
             .unwrap_or(0);
 
         let exp = p.get("exp").and_then(|e| e.as_i64());
+        let nbf = p.get("nbf").and_then(|n| n.as_i64());
         let (is_expired, expires_in_sec, expiration_str) = if let Some(exp_val) = exp {
             let diff = exp_val - now_sec;
             let expired = diff <= 0;
@@ -403,11 +886,25 @@ pub fn analyze_token(raw: &str) -> Option<JwtAnalysis> {
             (false, None, Some("Sin caducidad fija (exp)".into()))
         };
 
-        let sub = p.get("sub").or_else(|| p.get("id")).and_then(|s| s.as_str()).map(|s| s.to_string());
+        let sub = p
+            .get("sub")
+            .or_else(|| p.get("user_id"))
+            .or_else(|| p.get("id"))
+            .and_then(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
         let role = p.get("role").or_else(|| p.get("user_role")).and_then(|s| s.as_str()).map(|s| s.to_string());
 
         let warning = if is_expired {
             Some("Este token ha expirado. Las solicitudes serán rechazadas (HTTP 401).".into())
+        } else if let Some(nbf_val) = nbf {
+            if now_sec + 30 < nbf_val {
+                Some("Este token aún no entra en vigencia temporal (claim 'nbf').".into())
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -483,8 +980,80 @@ pub fn load_font_family() -> String {
     "Segoe UI".to_string()
 }
 
-/// Guarda la preferencia de tema (oscuro/claro) en %APPDATA%/kyo/settings.json
-pub fn save_theme_preference(is_dark: bool) -> Result<(), String> {
+/// Detecta el tema de aplicaciones configurado en Windows 11
+/// (`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme`).
+/// Retorna `true` para modo oscuro, `false` para modo claro.
+pub fn detect_windows_theme_is_dark() -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        type HKEY = isize;
+        type DWORD = u32;
+        type LSTATUS = i32;
+
+        const HKEY_CURRENT_USER: HKEY = 0x80000001_u32 as isize;
+        const KEY_READ: DWORD = 0x20019;
+        const ERROR_SUCCESS: LSTATUS = 0;
+
+        extern "system" {
+            fn RegOpenKeyExW(
+                hKey: HKEY,
+                lpSubKey: *const u16,
+                ulOptions: DWORD,
+                samDesired: DWORD,
+                phkResult: *mut HKEY,
+            ) -> LSTATUS;
+
+            fn RegQueryValueExW(
+                hKey: HKEY,
+                lpValueName: *const u16,
+                lpReserved: *mut DWORD,
+                lpType: *mut DWORD,
+                lpData: *mut u8,
+                lpcbData: *mut DWORD,
+            ) -> LSTATUS;
+
+            fn RegCloseKey(hKey: HKEY) -> LSTATUS;
+        }
+
+        let subkey: Vec<u16> = OsStr::new("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let value_name: Vec<u16> = OsStr::new("AppsUseLightTheme")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            let mut hk: HKEY = 0;
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hk) == ERROR_SUCCESS {
+                let mut val: DWORD = 0;
+                let mut val_size: DWORD = std::mem::size_of::<DWORD>() as DWORD;
+                let mut val_type: DWORD = 0;
+                let res = RegQueryValueExW(
+                    hk,
+                    value_name.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut val_type,
+                    &mut val as *mut DWORD as *mut u8,
+                    &mut val_size,
+                );
+                let _ = RegCloseKey(hk);
+                if res == ERROR_SUCCESS {
+                    // AppsUseLightTheme == 1 -> Claro, 0 -> Oscuro
+                    return val == 0;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Guarda el modo de tema elegido por el usuario ("system", "dark", "light") en %APPDATA%/kyo/settings.json
+pub fn save_theme_mode(mode: crate::models::ThemePreference) -> Result<(), String> {
     #[cfg(windows)]
     if let Ok(appdata) = std::env::var("APPDATA") {
         let kyo_dir = PathBuf::from(appdata).join("kyo");
@@ -498,31 +1067,68 @@ pub fn save_theme_preference(is_dark: bool) -> Result<(), String> {
         } else {
             serde_json::json!({})
         };
-        json["theme"] = serde_json::json!(if is_dark { "dark" } else { "light" });
+        let mode_str = match mode {
+            crate::models::ThemePreference::System => "system",
+            crate::models::ThemePreference::Dark => "dark",
+            crate::models::ThemePreference::Light => "light",
+        };
+        json["theme"] = serde_json::json!(mode_str);
+        json["theme_source"] = serde_json::json!("user");
         std::fs::write(&settings_file, json.to_string())
             .map_err(|e| format!("Error guardando settings.json: {e}"))?;
     }
     Ok(())
 }
 
-/// Carga la preferencia de tema guardada (true = dark por defecto, false = light)
-pub fn load_theme_preference() -> bool {
+/// Carga el modo de tema configurado (por defecto sigue al tema de Windows 11)
+pub fn load_theme_mode() -> crate::models::ThemePreference {
     #[cfg(windows)]
     if let Ok(appdata) = std::env::var("APPDATA") {
         let settings_file = PathBuf::from(appdata).join("kyo").join("settings.json");
         if settings_file.is_file() {
             if let Ok(content) = std::fs::read_to_string(&settings_file) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(t) = json.get("theme").and_then(|v| v.as_str()) {
-                        if t == "light" {
-                            return false;
+                    let is_user_chosen = json
+                        .get("theme_source")
+                        .and_then(|v| v.as_str())
+                        == Some("user");
+                    if is_user_chosen {
+                        if let Some(t) = json.get("theme").and_then(|v| v.as_str()) {
+                            return match t {
+                                "dark" => crate::models::ThemePreference::Dark,
+                                "light" => crate::models::ThemePreference::Light,
+                                _ => crate::models::ThemePreference::System,
+                            };
                         }
                     }
                 }
             }
         }
     }
-    true
+    crate::models::ThemePreference::System
+}
+
+/// Guarda la preferencia de tema (oscuro/claro) en %APPDATA%/kyo/settings.json
+pub fn save_theme_preference(is_dark: bool) -> Result<(), String> {
+    save_theme_mode(if is_dark {
+        crate::models::ThemePreference::Dark
+    } else {
+        crate::models::ThemePreference::Light
+    })
+}
+
+/// Carga la preferencia de tema resuelta (true = dark, false = light), usando Windows 11 por defecto
+pub fn load_theme_preference() -> bool {
+    match load_theme_mode() {
+        crate::models::ThemePreference::System => detect_windows_theme_is_dark(),
+        crate::models::ThemePreference::Dark => true,
+        crate::models::ThemePreference::Light => false,
+    }
+}
+
+/// Espera asíncrona en segundos usando el runtime de Tokio del crate `ui`.
+pub async fn sleep_secs(secs: u64) {
+    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
 }
 
 #[cfg(windows)]
@@ -651,8 +1257,27 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
     } else {
         local_font.read().clone()
     };
-    let mut active_tab = use_signal(|| SettingsTab::KyoConnection);
+    let target_tab_ctx = try_use_context::<Signal<Option<SettingsTab>>>();
+    let mut active_tab = use_signal(|| {
+        target_tab_ctx.as_ref().and_then(|t| t.peek().clone()).unwrap_or(SettingsTab::KyoConnection)
+    });
+    use_effect(move || {
+        if let Some(ctx) = target_tab_ctx {
+            if let Some(t) = *ctx.read() {
+                active_tab.set(t);
+            }
+        }
+    });
+
+    let app_downloads_dir_ctx = try_use_context::<crate::models::AppDownloadsDir>();
+    let mut downloads_dir = if let Some(ctx) = app_downloads_dir_ctx {
+        ctx.0
+    } else {
+        use_signal(load_downloads_dir)
+    };
+    let default_os_dir = get_default_os_downloads_dir();
     let app_theme = try_use_context::<crate::models::AppTheme>();
+    let app_theme_mode = try_use_context::<crate::models::AppThemeMode>();
 
     // Estado del formulario de Token y Upstream
     let mut token_input = use_signal(load_auth_token);
@@ -1143,23 +1768,44 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
                                     div {
                                         class: "space-y-4",
                                         div {
-                                            class: "p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex items-center justify-between",
+                                            class: "p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex items-center justify-between gap-3",
                                             div {
                                                 h3 { class: "font-semibold text-zinc-200 text-xs", "Tema Visual" }
-                                                p { class: "text-[11px] text-zinc-400", "Alterna entre modo oscuro inmersivo y modo claro diurno." }
+                                                p { class: "text-[11px] text-zinc-400", "Sincroniza automáticamente con Windows 11 o elige oscuro/claro." }
                                             }
                                             div {
-                                                class: "flex items-center gap-1.5 p-1 rounded-xl bg-zinc-900 border border-zinc-800",
+                                                class: "flex items-center gap-1.5 p-1 rounded-xl bg-zinc-900 border border-zinc-800 shrink-0",
                                                 button {
-                                                    class: if app_theme.map(|t| *t.0.read()).unwrap_or(true) {
+                                                    class: if app_theme_mode.map(|m| *m.0.read() == crate::models::ThemePreference::System).unwrap_or(true) {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-100 shadow-sm transition-all"
                                                     } else {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                                                     },
                                                     onclick: move |_| {
+                                                        if let Some(mut m) = app_theme_mode {
+                                                            m.0.set(crate::models::ThemePreference::System);
+                                                        }
+                                                        if let Some(mut t) = app_theme {
+                                                            t.0.set(detect_windows_theme_is_dark());
+                                                        }
+                                                        let _ = save_theme_mode(crate::models::ThemePreference::System);
+                                                    },
+                                                    span { "Sistema" }
+                                                }
+                                                button {
+                                                    class: if app_theme_mode.map(|m| *m.0.read() == crate::models::ThemePreference::Dark).unwrap_or(false) {
+                                                        "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-100 shadow-sm transition-all"
+                                                    } else {
+                                                        "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
+                                                    },
+                                                    onclick: move |_| {
+                                                        if let Some(mut m) = app_theme_mode {
+                                                            m.0.set(crate::models::ThemePreference::Dark);
+                                                        }
                                                         if let Some(mut t) = app_theme {
                                                             t.0.set(true);
                                                         }
+                                                        let _ = save_theme_mode(crate::models::ThemePreference::Dark);
                                                     },
                                                     svg {
                                                         class: "w-3.5 h-3.5 text-amber-300",
@@ -1172,15 +1818,19 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
                                                     span { "Oscuro" }
                                                 }
                                                 button {
-                                                    class: if !app_theme.map(|t| *t.0.read()).unwrap_or(true) {
+                                                    class: if app_theme_mode.map(|m| *m.0.read() == crate::models::ThemePreference::Light).unwrap_or(false) {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-100 shadow-sm transition-all"
                                                     } else {
                                                         "flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                                                     },
                                                     onclick: move |_| {
+                                                        if let Some(mut m) = app_theme_mode {
+                                                            m.0.set(crate::models::ThemePreference::Light);
+                                                        }
                                                         if let Some(mut t) = app_theme {
                                                             t.0.set(false);
                                                         }
+                                                        let _ = save_theme_mode(crate::models::ThemePreference::Light);
                                                     },
                                                     svg {
                                                         class: "w-3.5 h-3.5 text-amber-400",
@@ -1422,6 +2072,103 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
                                                     }
                                                     p { class: "text-xs font-semibold leading-relaxed", "El veloz murciélago hindú comía feliz cardillo y kiwi. 0123456789" }
                                                     p { class: "text-[11px] text-zinc-400", "The quick brown fox jumps over the lazy dog. Aa Bb Gg Qq Ww Zz" }
+                                                }
+                                            }
+                                        }
+
+                                        // Configuración de Carpeta de Descargas Predeterminada
+                                        {
+                                            let cur_dl = downloads_dir.read().clone();
+                                            let is_custom_dl = cur_dl != default_os_dir;
+                                            rsx! {
+                                                div {
+                                                    class: "p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 space-y-3",
+                                                    div {
+                                                        class: "flex items-center justify-between",
+                                                        div {
+                                                            h3 { class: "font-semibold text-zinc-200 text-xs", "Carpeta de descargas predeterminada" }
+                                                            p { class: "text-[11px] text-zinc-400 mt-0.5", "Ubicación donde se guardarán los archivos descargados desde las bóvedas" }
+                                                        }
+                                                        if is_custom_dl {
+                                                            span { class: "px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[10px] font-medium", "Personalizada" }
+                                                        } else {
+                                                            span { class: "px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-medium", "Predeterminada del sistema" }
+                                                        }
+                                                    }
+                                                    div {
+                                                        class: "flex items-center gap-2",
+                                                        div {
+                                                            class: "flex-1 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-200 font-mono text-xs truncate flex items-center gap-2 min-w-0",
+                                                            title: "{cur_dl.to_string_lossy()}",
+                                                            svg {
+                                                                class: "w-4 h-4 text-amber-400 flex-none",
+                                                                view_box: "0 0 24 24",
+                                                                fill: "none",
+                                                                stroke: "currentColor",
+                                                                stroke_width: "2",
+                                                                path { d: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" }
+                                                            }
+                                                            span { class: "truncate", "{cur_dl.to_string_lossy()}" }
+                                                        }
+                                                        button {
+                                                            r#type: "button",
+                                                            class: "px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors flex items-center gap-1.5 cursor-pointer flex-none",
+                                                            title: "Abrir selector para elegir una carpeta del equipo",
+                                                            onclick: move |_| {
+                                                                let cur = downloads_dir.peek().clone();
+                                                                if let Some(folder) = rfd::FileDialog::new()
+                                                                    .set_directory(&cur)
+                                                                    .pick_folder()
+                                                                {
+                                                                    let _ = save_downloads_dir(&folder);
+                                                                    downloads_dir.set(folder);
+                                                                }
+                                                            },
+                                                            svg {
+                                                                class: "w-3.5 h-3.5",
+                                                                view_box: "0 0 24 24",
+                                                                fill: "none",
+                                                                stroke: "currentColor",
+                                                                stroke_width: "2",
+                                                                path { d: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" }
+                                                            }
+                                                            span { "Cambiar carpeta..." }
+                                                        }
+                                                        button {
+                                                            r#type: "button",
+                                                            class: "p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 border border-zinc-700 transition-colors cursor-pointer flex-none",
+                                                            title: "Abrir carpeta en el Explorador de archivos",
+                                                            onclick: {
+                                                                let p_open = cur_dl.clone();
+                                                                move |_| {
+                                                                    open_path_in_explorer(&p_open);
+                                                                }
+                                                            },
+                                                            svg {
+                                                                class: "w-3.5 h-3.5",
+                                                                view_box: "0 0 24 24",
+                                                                fill: "none",
+                                                                stroke: "currentColor",
+                                                                stroke_width: "2",
+                                                                path { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" }
+                                                                polyline { points: "15 3 21 3 21 9" }
+                                                                line { x1: "10", y1: "14", x2: "21", y2: "3" }
+                                                            }
+                                                        }
+                                                        if is_custom_dl {
+                                                            button {
+                                                                r#type: "button",
+                                                                class: "px-2.5 py-2 rounded-xl bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs border border-zinc-800 transition-colors cursor-pointer flex-none",
+                                                                title: "Restablecer a la carpeta Descargas original del sistema",
+                                                                onclick: move |_| {
+                                                                    if let Ok(res) = reset_downloads_dir() {
+                                                                        downloads_dir.set(res);
+                                                                    }
+                                                                },
+                                                                "Restablecer"
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }

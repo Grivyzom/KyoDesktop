@@ -14,13 +14,65 @@ import { invoke } from '@tauri-apps/api/core';
 import KyoIcon from './KyoIcon.vue';
 import SettingSlider from './SettingSlider.vue';
 import BloubEditor from './BloubEditor.vue';
+import { useAvatarMovement } from '../composables/useAvatarMovement';
+import {
+  useMusicDetector,
+  formatMmSs,
+  DANCE_STYLE_META,
+} from '../composables/useMusicDetector';
 import type { IconName } from '@/ui/icons';
+
+const {
+  openWindows,
+  isLoadingWindows,
+  refreshOpenWindows,
+  moveToAnchor,
+  triggerSingleRoam,
+  setLayer,
+} = useAvatarMovement();
+
+const {
+  isMusicDetected,
+  isMusicPlaying,
+  currentTrack,
+  currentDanceStyleMeta,
+  runningMusicApps,
+  upNextQueue,
+  recentTracks,
+  sleepTimerRemaining,
+  primaryAppName,
+  isRefreshingMusic,
+  refreshMusicState,
+  togglePlayPause,
+  nextTrack,
+  previousTrack,
+  toggleShuffle,
+  cycleRepeat,
+  seekToSecs,
+  addToQueue,
+  removeFromQueue,
+  clearQueue,
+  playSpotifyQuery,
+  setSleepTimerMinutes,
+  focusMusicApp,
+  moveNearMusicApp,
+} = useMusicDetector();
+
+const newQueueInput = ref('');
+const activeQueueTab = ref<'up_next' | 'recent'>('up_next');
+
+function handleAddQueueItem() {
+  const q = newQueueInput.value.trim();
+  if (!q) return;
+  addToQueue(q);
+  newQueueInput.value = '';
+}
 
 const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type CategoryId = 'general' | 'avatar' | 'gaze' | 'notifications' | 'kyo' | 'advanced' | 'about';
+type CategoryId = 'general' | 'avatar' | 'music' | 'gaze' | 'notifications' | 'kyo' | 'advanced' | 'about';
 
 const currentCategory = ref<CategoryId>('general');
 const searchQuery = ref('');
@@ -170,6 +222,7 @@ interface Category {
 const categories: Category[] = [
   { id: 'general', label: 'General', icon: 'gear', keywords: 'ventana idioma tema arranque inicio tipografia fuente font letra' },
   { id: 'avatar', label: 'Editor Bloub', icon: 'face', keywords: 'avatar forma color ojos expresion tamaño aspecto mcp conexion web' },
+  { id: 'music', label: 'Música & Apps', icon: 'music', keywords: 'musica spotify vlc youtube apple reproduccion bailar cancion pista smtc audio' },
   { id: 'gaze', label: 'Comportamiento', icon: 'eye', keywords: 'mirada cursor seguimiento sensibilidad reposo' },
   { id: 'notifications', label: 'Notificaciones', icon: 'bell', keywords: 'alertas orbitas particulas efectos' },
   { id: 'kyo', label: 'Conexión Kyo & MCP', icon: 'sparkles', keywords: 'sidecar cloud kyo api token jwt conexion servidor offline backend mcp url link' },
@@ -360,21 +413,221 @@ onBeforeUnmount(() => {
               <p class="kyo-hint">Arranque, idioma y preferencias del sistema.</p>
             </div>
 
+            <!-- Capas de ventanas y posición en el escritorio -->
+            <div class="kyo-card p-4 space-y-4">
+              <div class="flex items-center gap-2">
+                <KyoIcon name="layers" class="w-3.5 h-3.5 text-blue-500" />
+                <h3 class="kyo-card-title">Capa de ventana en el escritorio (Z-Order)</h3>
+              </div>
+              <p class="text-xs text-neutral-400">
+                Define cómo interactúa el avatar con las demás ventanas y aplicaciones abiertas en tu pantalla.
+              </p>
+
+              <!-- Selector visual de capas -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <!-- Siempre visible (Topmost) -->
+                <button
+                  type="button"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all"
+                  :class="settings.windowLayer === 'top' ? 'border-blue-500/80 bg-blue-500/10 text-white' : 'border-neutral-800 bg-neutral-900/50 hover:border-neutral-700 text-neutral-300'"
+                  @click="settings.windowLayer = 'top'; triggerSaveFeedback()"
+                >
+                  <span class="text-base leading-none mt-0.5 text-blue-400">▲</span>
+                  <div>
+                    <div class="text-xs font-semibold">Siempre visible (Topmost)</div>
+                    <div class="text-[11px] text-neutral-400 leading-tight mt-0.5">Flota por encima de todas las ventanas de tu escritorio.</div>
+                  </div>
+                </button>
+
+                <!-- Entre ventanas (Normal) -->
+                <button
+                  type="button"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all"
+                  :class="settings.windowLayer === 'normal' ? 'border-blue-500/80 bg-blue-500/10 text-white' : 'border-neutral-800 bg-neutral-900/50 hover:border-neutral-700 text-neutral-300'"
+                  @click="settings.windowLayer = 'normal'; triggerSaveFeedback()"
+                >
+                  <span class="text-base leading-none mt-0.5 text-emerald-400">■</span>
+                  <div>
+                    <div class="text-xs font-semibold">Entre ventanas abiertas (Normal)</div>
+                    <div class="text-[11px] text-neutral-400 leading-tight mt-0.5">Se intercala en la pila de ventanas normales del sistema.</div>
+                  </div>
+                </button>
+
+                <!-- Fondo de escritorio (Bottom) -->
+                <button
+                  type="button"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all"
+                  :class="settings.windowLayer === 'bottom' ? 'border-blue-500/80 bg-blue-500/10 text-white' : 'border-neutral-800 bg-neutral-900/50 hover:border-neutral-700 text-neutral-300'"
+                  @click="settings.windowLayer = 'bottom'; triggerSaveFeedback()"
+                >
+                  <span class="text-base leading-none mt-0.5 text-amber-400">▼</span>
+                  <div>
+                    <div class="text-xs font-semibold">Fondo de escritorio (Desktop)</div>
+                    <div class="text-[11px] text-neutral-400 leading-tight mt-0.5">Vive detrás de las ventanas abiertas, sobre tu wallpaper.</div>
+                  </div>
+                </button>
+
+                <!-- Detrás de la ventana activa -->
+                <button
+                  type="button"
+                  class="flex items-start gap-2.5 p-3 rounded-xl border text-left transition-all"
+                  :class="settings.windowLayer === 'behind_active' ? 'border-blue-500/80 bg-blue-500/10 text-white' : 'border-neutral-800 bg-neutral-900/50 hover:border-neutral-700 text-neutral-300'"
+                  @click="settings.windowLayer = 'behind_active'; triggerSaveFeedback()"
+                >
+                  <span class="text-base leading-none mt-0.5 text-purple-400">👁</span>
+                  <div>
+                    <div class="text-xs font-semibold">Detrás de ventana activa</div>
+                    <div class="text-[11px] text-neutral-400 leading-tight mt-0.5">Se sitúa inmediatamente bajo la ventana que estás usando.</div>
+                  </div>
+                </button>
+              </div>
+
+              <!-- Ventanas abiertas específicas -->
+              <div class="pt-2 border-t kyo-divider">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-xs font-medium text-neutral-300">Colocar detrás de una ventana específica</span>
+                  <button
+                    type="button"
+                    class="text-xs px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center gap-1.5 transition-colors"
+                    :disabled="isLoadingWindows"
+                    @click="refreshOpenWindows"
+                  >
+                    <KyoIcon name="refresh" class="w-3 h-3" :class="isLoadingWindows ? 'animate-spin' : ''" />
+                    <span>Escanear ventanas</span>
+                  </button>
+                </div>
+
+                <div v-if="openWindows.length > 0" class="max-h-36 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                  <div
+                    v-for="win in openWindows"
+                    :key="win.hwnd"
+                    class="flex items-center justify-between p-2 rounded-lg bg-neutral-950/40 hover:bg-neutral-800/60 border border-neutral-800/50 text-xs text-neutral-300"
+                  >
+                    <div class="truncate max-w-[280px]">
+                      <span class="font-medium text-neutral-200">{{ win.title }}</span>
+                      <span v-if="win.process_name" class="text-[10px] text-neutral-500 ml-1.5">({{ win.process_name }})</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="px-2 py-0.5 text-[11px] rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition-colors"
+                      @click="setLayer('behind_active', win.hwnd); triggerSaveFeedback()"
+                    >
+                      Enviar detrás
+                    </button>
+                  </div>
+                </div>
+                <div v-else-if="!isLoadingWindows" class="text-[11px] text-neutral-500 italic">
+                  Haz clic en "Escanear ventanas" para detectar las aplicaciones abiertas en tu escritorio.
+                </div>
+              </div>
+            </div>
+
+            <!-- Desplazamiento y Deambulación libre en X e Y -->
+            <div class="kyo-card p-4 space-y-4">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <KyoIcon name="move" class="w-3.5 h-3.5 text-blue-500" />
+                  <h3 class="kyo-card-title">Desplazamiento libre en X e Y (Free Roam)</h3>
+                </div>
+                <input
+                  v-model="settings.freeRoamEnabled"
+                  type="checkbox"
+                  class="kyo-check"
+                  @change="triggerSaveFeedback"
+                />
+              </div>
+
+              <p class="text-xs text-neutral-400">
+                Permite al avatar flotar y recorrer de manera autónoma el escritorio en coordenadas X e Y cuando está ocioso.
+              </p>
+
+              <div v-if="settings.freeRoamEnabled" class="space-y-3.5 pt-2 border-t kyo-divider">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label class="kyo-label">Área de deambulación</label>
+                    <span class="kyo-hint">Dónde se desplaza libremente por la pantalla.</span>
+                  </div>
+                  <select v-model="settings.roamMode" class="kyo-input w-44" @change="triggerSaveFeedback">
+                    <option value="full">Todo el escritorio</option>
+                    <option value="edges">Perímetro y bordes</option>
+                  </select>
+                </div>
+
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label class="kyo-label">Velocidad de vuelo</label>
+                    <span class="kyo-hint">Aceleración e inercia al cambiar de coordenadas.</span>
+                  </div>
+                  <select v-model="settings.roamSpeed" class="kyo-input w-44" @change="triggerSaveFeedback">
+                    <option value="slow">Flotación suave (Lenta)</option>
+                    <option value="normal">Desplazamiento natural</option>
+                    <option value="fast">Rápida y ágil</option>
+                  </select>
+                </div>
+
+                <div>
+                  <div class="flex items-center justify-between text-xs mb-1.5">
+                    <label class="kyo-label mb-0">Frecuencia entre paseos</label>
+                    <span class="text-neutral-400 font-mono">{{ settings.roamIntervalSeconds }}s</span>
+                  </div>
+                  <input
+                    v-model.number="settings.roamIntervalSeconds"
+                    type="range"
+                    min="10"
+                    max="120"
+                    step="5"
+                    class="w-full accent-blue-500"
+                    @change="triggerSaveFeedback"
+                  />
+                  <div class="flex justify-between text-[10px] text-neutral-500 mt-0.5">
+                    <span>Constante (10s)</span>
+                    <span>Espaciado (120s)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Botones de prueba y anclaje rápido -->
+              <div class="pt-2 border-t kyo-divider">
+                <label class="kyo-label mb-2 block">Acciones de desplazamiento rápido</label>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+                    @click="moveToAnchor('center')"
+                  >
+                    ◎ Ir al centro
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+                    @click="moveToAnchor('bottom-right')"
+                  >
+                    ↘ Esquina inferior derecha
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+                    @click="moveToAnchor('bottom-left')"
+                  >
+                    ↙ Esquina inferior izquierda
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-lg bg-blue-600/30 hover:bg-blue-600/40 text-blue-300 border border-blue-500/40 transition-colors"
+                    @click="triggerSingleRoam"
+                  >
+                    ✦ Paseo aleatorio ahora
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Inicio con el sistema -->
             <div class="kyo-card p-4 space-y-4">
               <div class="flex items-center gap-2">
                 <KyoIcon name="window" class="w-3.5 h-3.5 text-blue-500" />
-                <h3 class="kyo-card-title">Comportamiento de la ventana</h3>
+                <h3 class="kyo-card-title">Inicio del sistema</h3>
               </div>
-
-              <div class="flex items-center justify-between gap-4">
-                <div>
-                  <label class="kyo-label">Fijar siempre visible</label>
-                  <span class="kyo-hint">Mantiene el avatar flotando por encima del resto de ventanas.</span>
-                </div>
-                <input v-model="settings.alwaysOnTop" type="checkbox" class="kyo-check" @change="triggerSaveFeedback" />
-              </div>
-
-              <hr class="kyo-divider" />
 
               <div class="flex items-center justify-between gap-4">
                 <div>
@@ -612,6 +865,547 @@ onBeforeUnmount(() => {
                   <KyoIcon name="sparkles" class="w-3.5 h-3.5 text-indigo-400" />
                   Configurar Conexión & Token
                 </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- MÚSICA & APPS -->
+          <section v-else-if="currentCategory === 'music'" class="space-y-4">
+            <div>
+              <h2 class="text-base font-bold tracking-tight">Música y Aplicaciones Multimedia</h2>
+              <p class="kyo-hint">
+                Detección universal en el PC (Spotify, Apple Music, VLC, YouTube Music, SMTC) e interacciones en vivo de Kyo.
+              </p>
+            </div>
+
+            <!-- Tarjeta 1: Estado en Vivo & Reproductor Detectado -->
+            <div class="kyo-card p-4 space-y-4">
+              <div class="flex items-center justify-between gap-4">
+                <div class="flex items-center gap-2.5">
+                  <span
+                    class="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+                    :class="
+                      isMusicPlaying
+                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                        : isMusicDetected
+                        ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30'
+                        : 'bg-zinc-800/70 text-zinc-400 border border-zinc-700/50'
+                    "
+                  >
+                    <KyoIcon name="music" class="w-4 h-4" />
+                  </span>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <h3 class="kyo-card-title">Monitor Multimedia de Windows</h3>
+                      <span
+                        class="text-[10px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1.5"
+                        :class="
+                          isMusicPlaying
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            : isMusicDetected
+                            ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                            : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                        "
+                      >
+                        <span
+                          class="w-1.5 h-1.5 rounded-full"
+                          :class="
+                            isMusicPlaying
+                              ? 'bg-emerald-400 animate-pulse'
+                              : isMusicDetected
+                              ? 'bg-amber-400'
+                              : 'bg-zinc-500'
+                          "
+                        />
+                        {{
+                          isMusicPlaying
+                            ? `Sonando en ${primaryAppName}`
+                            : isMusicDetected
+                            ? `${primaryAppName} detectado (Pausa)`
+                            : 'Sin música activa'
+                        }}
+                      </span>
+                    </div>
+                    <span class="kyo-hint">
+                      Sincronizado mediante Windows SMTC y escaneo nativo de procesos/ventanas sin requerir API Keys.
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  class="kyo-btn text-xs shrink-0"
+                  :disabled="isRefreshingMusic"
+                  @click="refreshMusicState(true)"
+                >
+                  <KyoIcon name="refresh" class="w-3.5 h-3.5" :class="{ 'animate-spin': isRefreshingMusic }" />
+                  Actualizar
+                </button>
+              </div>
+
+              <!-- Pista actual y Controles de Reproducción Estilo Spotify -->
+              <div
+                v-if="currentTrack || isMusicDetected"
+                class="p-4 rounded-2xl border border-[#282828] bg-[#121212] text-white space-y-3 shadow-md"
+                :style="
+                  isMusicPlaying
+                    ? 'border-color: rgba(29, 185, 84, 0.4); background: radial-gradient(120% 90% at 10% 0%, rgba(29, 185, 84, 0.16) 0%, #121212 65%)'
+                    : ''
+                "
+              >
+                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div class="flex items-center gap-3.5 min-w-0 flex-1">
+                    <!-- Carátula del Álbum en Vivo -->
+                    <div class="w-13 h-13 rounded-xl bg-[#282828] border border-white/10 overflow-hidden flex items-center justify-center shrink-0 shadow">
+                      <img
+                        v-if="currentTrack?.thumbnail_data_uri"
+                        :src="currentTrack.thumbnail_data_uri"
+                        alt=""
+                        class="w-full h-full object-cover"
+                      />
+                      <KyoIcon v-else name="music" class="w-6 h-6 text-[#1ED760]" />
+                    </div>
+
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center gap-2">
+                        <span class="text-sm font-bold text-white truncate">
+                          {{ currentTrack?.title || `${primaryAppName} abierto en el PC` }}
+                        </span>
+                        <span
+                          class="px-2 py-0.5 text-[10px] rounded-full bg-[#1ED760]/15 text-[#1ED760] border border-[#1ED760]/30 font-mono shrink-0"
+                        >
+                          {{ currentTrack?.source_app_name || primaryAppName }}
+                        </span>
+                      </div>
+                      <div class="text-xs text-[#b3b3b3] truncate mt-0.5">
+                        {{
+                          currentTrack?.artist
+                            ? `${currentTrack.artist}${currentTrack.album ? ` · ${currentTrack.album}` : ''}`
+                            : isMusicPlaying
+                            ? 'Reproduciendo audio en vivo'
+                            : 'En pausa'
+                        }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Botonera de Controles Estilo Spotify -->
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      class="px-2 py-1.5 rounded-lg text-xs transition-colors cursor-pointer"
+                      :class="currentTrack?.is_shuffle ? 'text-[#1ED760] bg-[#1ED760]/15' : 'text-[#b3b3b3] hover:text-white'"
+                      title="Alternar modo aleatorio (Shuffle)"
+                      @click="toggleShuffle()"
+                    >
+                      🔀
+                    </button>
+                    <button
+                      type="button"
+                      class="p-2 rounded-full text-[#b3b3b3] hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                      title="Pista anterior"
+                      @click="previousTrack()"
+                    >
+                      <KyoIcon name="skipPrev" class="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      class="w-9 h-9 rounded-full bg-[#1ED760] hover:bg-[#3be477] text-black flex items-center justify-center shadow-md transition-transform active:scale-95 cursor-pointer"
+                      :title="isMusicPlaying ? 'Pausar reproducción' : 'Reanudar reproducción'"
+                      @click="togglePlayPause()"
+                    >
+                      <KyoIcon :name="isMusicPlaying ? 'pause' : 'play'" class="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      class="p-2 rounded-full text-[#b3b3b3] hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                      title="Siguiente pista"
+                      @click="nextTrack()"
+                    >
+                      <KyoIcon name="skipNext" class="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      class="px-2 py-1.5 rounded-lg text-xs transition-colors cursor-pointer"
+                      :class="currentTrack?.repeat_mode && currentTrack.repeat_mode !== 'none' ? 'text-[#1ED760] bg-[#1ED760]/15' : 'text-[#b3b3b3] hover:text-white'"
+                      title="Alternar repetición (Repeat)"
+                      @click="cycleRepeat()"
+                    >
+                      🔁 {{ currentTrack?.repeat_mode === 'track' ? '1' : '' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="kyo-btn px-2.5 py-1.5 text-xs ml-1"
+                      title="Traer ventana de música al frente"
+                      @click="focusMusicApp()"
+                    >
+                      <KyoIcon name="window" class="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      class="kyo-btn px-2.5 py-1.5 text-xs text-indigo-300"
+                      title="Mover el avatar de Kyo junto a la ventana de música"
+                      @click="moveNearMusicApp(); handleClose()"
+                    >
+                      <KyoIcon name="move" class="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Barra de progreso interactiva (Seek) -->
+                <div v-if="(currentTrack?.duration_secs ?? 0) > 0" class="space-y-1 pt-1">
+                  <input
+                    type="range"
+                    :min="0"
+                    :max="currentTrack?.duration_secs ?? 100"
+                    :value="currentTrack?.position_secs ?? 0"
+                    class="w-full h-1.5 accent-[#1ED760] cursor-pointer"
+                    @change="(e) => seekToSecs(Number((e.target as HTMLInputElement).value))"
+                  />
+                  <div class="flex justify-between text-[10px] font-mono text-[#a7a7a7]">
+                    <span>{{ formatMmSs(currentTrack?.position_secs) }}</span>
+                    <span>{{ formatMmSs(currentTrack?.duration_secs) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Fila de Reproducción (A continuación + Recientes) y Temporizador Inteligente -->
+              <div class="pt-3 border-t kyo-divider space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                      :class="activeQueueTab === 'up_next' ? 'bg-[#1ED760]/20 text-[#1ED760] border border-[#1ED760]/40' : 'bg-zinc-800/70 text-zinc-400'"
+                      @click="activeQueueTab = 'up_next'"
+                    >
+                      Fila de reproducción ({{ upNextQueue.length }})
+                    </button>
+                    <button
+                      type="button"
+                      class="px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                      :class="activeQueueTab === 'recent' ? 'bg-[#1ED760]/20 text-[#1ED760] border border-[#1ED760]/40' : 'bg-zinc-800/70 text-zinc-400'"
+                      @click="activeQueueTab = 'recent'"
+                    >
+                      Escuchado recientemente ({{ recentTracks.length }})
+                    </button>
+                  </div>
+
+                  <!-- Temporizador Musical (Sleep Timer) -->
+                  <div class="flex items-center gap-1.5 text-xs">
+                    <span class="text-[11px] text-zinc-400">⏱ Pausa automática:</span>
+                    <button
+                      type="button"
+                      class="px-2 py-0.5 rounded-full text-[10px] font-mono border cursor-pointer"
+                      :class="!sleepTimerRemaining ? 'bg-[#1ED760]/20 text-[#1ED760] border-[#1ED760]/40' : 'border-zinc-700 text-zinc-400'"
+                      @click="setSleepTimerMinutes(0)"
+                    >
+                      Off
+                    </button>
+                    <button
+                      v-for="m in [15, 30, 45, 60]"
+                      :key="m"
+                      type="button"
+                      class="px-2 py-0.5 rounded-full text-[10px] font-mono border border-zinc-700 text-zinc-300 hover:border-[#1ED760] hover:text-[#1ED760] cursor-pointer"
+                      @click="setSleepTimerMinutes(m)"
+                    >
+                      {{ m }}m
+                    </button>
+                    <span v-if="sleepTimerRemaining" class="text-[11px] font-mono text-[#1ED760] font-semibold ml-1">
+                      ({{ formatMmSs(sleepTimerRemaining) }})
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Buscador / Agregador a la Fila -->
+                <div v-if="activeQueueTab === 'up_next'" class="space-y-2">
+                  <div class="flex items-center gap-2">
+                    <input
+                      v-model="newQueueInput"
+                      type="text"
+                      placeholder="Añadir canción o artista a tu fila (ej. Daft Punk - Veridis Quo)..."
+                      class="kyo-input flex-1 text-xs"
+                      @keydown.enter="handleAddQueueItem"
+                    />
+                    <button
+                      type="button"
+                      class="px-3 py-1.5 rounded-xl bg-[#1ED760] hover:bg-[#3be477] text-black font-bold text-xs cursor-pointer transition-colors"
+                      @click="handleAddQueueItem"
+                    >
+                      + Añadir a la fila
+                    </button>
+                    <button
+                      v-if="newQueueInput.trim()"
+                      type="button"
+                      class="kyo-btn text-xs"
+                      @click="playSpotifyQuery(newQueueInput); newQueueInput = ''"
+                    >
+                      ▶ Buscar en Spotify
+                    </button>
+                  </div>
+
+                  <div v-if="upNextQueue.length > 0" class="max-h-40 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                    <div
+                      v-for="(item, idx) in upNextQueue"
+                      :key="item.id"
+                      class="flex items-center justify-between p-2 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-xs"
+                    >
+                      <div class="flex items-center gap-2.5 min-w-0">
+                        <span class="text-[11px] font-mono text-[#1ED760] w-4">{{ idx + 1 }}</span>
+                        <div class="min-w-0">
+                          <div class="font-semibold text-zinc-100 truncate">{{ item.title }}</div>
+                          <div class="text-[10.5px] text-zinc-400 truncate">{{ item.artist }}</div>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          class="px-2 py-1 rounded bg-[#1ED760]/15 text-[#1ED760] hover:bg-[#1ED760]/25 text-[10px] font-semibold cursor-pointer"
+                          @click="playSpotifyQuery(`${item.artist !== 'Spotify' ? item.artist + ' ' : ''}${item.title}`)"
+                        >
+                          ▶ Reproducir
+                        </button>
+                        <button
+                          type="button"
+                          class="px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-rose-400 text-[10px] cursor-pointer"
+                          @click="removeFromQueue(item.id)"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    </div>
+                    <div class="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        class="text-[11px] text-zinc-400 hover:text-rose-400 cursor-pointer"
+                        @click="clearQueue()"
+                      >
+                        Vaciar fila de reproducción
+                      </button>
+                    </div>
+                  </div>
+                  <div v-else class="text-xs text-zinc-500 italic py-1">
+                    Tu fila está vacía. Escribe cualquier canción arriba para programar tu siguiente pista en Spotify.
+                  </div>
+                </div>
+
+                <!-- Historial de canciones recientes -->
+                <div v-else class="space-y-1.5 max-h-44 overflow-y-auto pr-1 custom-scrollbar">
+                  <div
+                    v-for="(item, idx) in recentTracks"
+                    :key="item.id"
+                    class="flex items-center justify-between p-2 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-xs"
+                  >
+                    <div class="flex items-center gap-2.5 min-w-0">
+                      <span class="text-[11px] font-mono text-zinc-500 w-4">{{ idx + 1 }}</span>
+                      <img
+                        v-if="item.thumbnail_data_uri"
+                        :src="item.thumbnail_data_uri"
+                        alt=""
+                        class="w-7 h-7 rounded object-cover shrink-0"
+                      />
+                      <div class="min-w-0">
+                        <div class="font-semibold text-zinc-100 truncate">{{ item.title }}</div>
+                        <div class="text-[10.5px] text-zinc-400 truncate">{{ item.artist }} · {{ item.source_app_name }}</div>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] cursor-pointer"
+                        @click="addToQueue(`${item.artist ? item.artist + ' - ' : ''}${item.title}`)"
+                      >
+                        + Fila
+                      </button>
+                      <button
+                        type="button"
+                        class="px-2 py-1 rounded bg-[#1ED760]/15 text-[#1ED760] hover:bg-[#1ED760]/25 text-[10px] font-semibold cursor-pointer"
+                        @click="playSpotifyQuery(`${item.artist} ${item.title}`)"
+                      >
+                        ▶ Spotify
+                      </button>
+                    </div>
+                  </div>
+                  <div v-if="recentTracks.length === 0" class="text-xs text-zinc-500 italic py-1">
+                    Las canciones que escuches en tu PC se guardarán automáticamente en este historial.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Lista de Apps de Música detectadas en ejecución -->
+              <div v-if="runningMusicApps.length > 0" class="pt-2 border-t kyo-divider space-y-2">
+                <span class="text-xs font-medium text-neutral-300 block">
+                  Aplicaciones multimedia detectadas en ejecución ({{ runningMusicApps.length }})
+                </span>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div
+                    v-for="app in runningMusicApps"
+                    :key="`${app.id}-${app.pid}`"
+                    class="p-2.5 rounded-xl border border-zinc-800/80 bg-zinc-950/40 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-1.5">
+                        <span
+                          class="w-2 h-2 rounded-full shrink-0"
+                          :class="app.is_playing ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-500'"
+                        />
+                        <span class="font-semibold text-zinc-200 truncate">{{ app.name }}</span>
+                        <span class="text-[10px] font-mono text-zinc-500">({{ app.process_name }})</span>
+                      </div>
+                      <div class="text-[11px] text-zinc-400 truncate mt-0.5">
+                        {{
+                          app.track_title
+                            ? `${app.track_artist ? `${app.track_artist} — ` : ''}${app.track_title}`
+                            : app.window_title
+                        }}
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <button
+                        v-if="app.hwnd !== 0"
+                        type="button"
+                        class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-[10px] text-zinc-300 transition-colors"
+                        @click="focusMusicApp(app.id)"
+                      >
+                        Enfocar
+                      </button>
+                      <button
+                        v-if="app.hwnd !== 0"
+                        type="button"
+                        class="px-2 py-1 rounded bg-indigo-600/20 hover:bg-indigo-600/30 text-[10px] text-indigo-300 transition-colors"
+                        title="Mover a Kyo hacia esta ventana"
+                        @click="moveNearMusicApp(app.id); handleClose()"
+                      >
+                        Ir allí
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-else class="text-xs text-zinc-400 italic py-1">
+                Abre Spotify, Apple Music, VLC, AIMP, Foobar2000 o YouTube Music en tu navegador para que Kyo lo detecte automáticamente.
+              </div>
+            </div>
+
+            <!-- Tarjeta 2: Preferencias de Interacción y Reacción Musical de Kyo -->
+            <div class="kyo-card p-4 space-y-4">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="kyo-label">Detectar música y aplicaciones como Spotify</label>
+                  <span class="kyo-hint">Permite a Kyo saber si estás escuchando música en tu PC y qué pista suena.</span>
+                </div>
+                <input
+                  v-model="settings.musicDetectionEnabled"
+                  type="checkbox"
+                  class="kyo-check"
+                  @change="triggerSaveFeedback"
+                />
+              </div>
+
+              <hr class="kyo-divider" />
+
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="kyo-label">Bailar automáticamente con la música</label>
+                  <span class="kyo-hint">
+                    Kyo adapta su coreografía automáticamente según el género y estilo de la canción (Pop/Groove, Chill/Indie, Rock, Electro, Urbano, Latino).
+                  </span>
+                </div>
+                <input
+                  v-model="settings.musicAutoDance"
+                  type="checkbox"
+                  class="kyo-check"
+                  :disabled="!settings.musicDetectionEnabled"
+                  @change="triggerSaveFeedback"
+                />
+              </div>
+
+              <hr class="kyo-divider" />
+
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <label class="kyo-label mb-0">Estilo de animación de baile</label>
+                    <span
+                      class="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                      :style="{
+                        backgroundColor: `${currentDanceStyleMeta.color}20`,
+                        color: currentDanceStyleMeta.color,
+                      }"
+                    >
+                      {{ currentDanceStyleMeta.emoji }} Activo: {{ currentDanceStyleMeta.label }}
+                    </span>
+                  </div>
+                  <span class="kyo-hint">
+                    {{ currentDanceStyleMeta.description }}
+                  </span>
+                </div>
+                <select
+                  v-model="settings.musicDanceStyle"
+                  class="kyo-input w-52"
+                  :disabled="!settings.musicDetectionEnabled"
+                  @change="triggerSaveFeedback"
+                >
+                  <option value="auto">✨ Automático por canción</option>
+                  <option
+                    v-for="meta in Object.values(DANCE_STYLE_META)"
+                    :key="meta.id"
+                    :value="meta.id"
+                  >
+                    {{ meta.emoji }} {{ meta.label }}
+                  </option>
+                </select>
+              </div>
+
+              <hr class="kyo-divider" />
+
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="kyo-label">Mostrar mini-píldora interactiva sobre el avatar</label>
+                  <span class="kyo-hint">
+                    Muestra el título de la canción actual bajo Kyo con controles rápidos (Anterior, Play/Pausa, Siguiente) al pasar el ratón.
+                  </span>
+                </div>
+                <input
+                  v-model="settings.musicShowFloatingPill"
+                  type="checkbox"
+                  class="kyo-check"
+                  :disabled="!settings.musicDetectionEnabled"
+                  @change="triggerSaveFeedback"
+                />
+              </div>
+
+              <hr class="kyo-divider" />
+
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="kyo-label">Reaccionar al cambiar de canción</label>
+                  <span class="kyo-hint">Kyo expresa alegría (<code class="font-mono text-indigo-400">joy</code>) brevemente cuando comienza una nueva pista.</span>
+                </div>
+                <input
+                  v-model="settings.musicReactOnTrackChange"
+                  type="checkbox"
+                  class="kyo-check"
+                  :disabled="!settings.musicDetectionEnabled"
+                  @change="triggerSaveFeedback"
+                />
+              </div>
+
+              <hr class="kyo-divider" />
+
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="kyo-label">Mantener despierto mientras suena música</label>
+                  <span class="kyo-hint">Evita que Kyo entre en sueño automático por inactividad si estás escuchando música.</span>
+                </div>
+                <input
+                  v-model="settings.musicPreventSleep"
+                  type="checkbox"
+                  class="kyo-check"
+                  :disabled="!settings.musicDetectionEnabled"
+                  @change="triggerSaveFeedback"
+                />
               </div>
             </div>
           </section>
@@ -1012,12 +1806,12 @@ onBeforeUnmount(() => {
             <div class="kyo-card p-4 space-y-4">
               <div>
                 <div class="flex items-center justify-between">
-                  <label class="kyo-label">Token de Autenticación (JWT Bearer)</label>
+                  <label class="kyo-label">Token de Autenticación (Token MCP / JWT)</label>
                   <span
                     v-if="liveJwtValidation.valid"
                     class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono"
                   >
-                    ✓ Estructura JWT Válida
+                    ✓ {{ tokenDraft.trim().startsWith('kyo_mcp_') ? 'Token MCP Válido' : 'Estructura JWT Válida' }}
                   </span>
                   <span
                     v-else-if="liveJwtValidation.isExpired"
@@ -1033,7 +1827,7 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <span class="kyo-hint">
-                  Token personal utilizado para autenticar llamadas de IA (<code class="font-mono">/ai/ask/stream</code>), tools del servidor MCP y réplicas locales.
+                  Token MCP generado en <code class="font-mono">kyo.broco.dev/mcp</code> o JWT de cuenta para conectar el escritorio con los servicios de Kyō.
                 </span>
               </div>
 
@@ -1045,7 +1839,7 @@ onBeforeUnmount(() => {
                   <input
                     v-model="tokenDraft"
                     :type="showToken ? 'text' : 'password'"
-                    placeholder="Pega aquí tu JWT Bearer token (header.payload.signature)..."
+                    placeholder="Pega aquí tu Token Key (kyo_mcp_... o eyJhbGci...)"
                     class="w-full text-xs font-mono pl-9 pr-10 py-2 rounded-xl bg-zinc-900 border text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 transition-colors"
                     :class="
                       !tokenDraft

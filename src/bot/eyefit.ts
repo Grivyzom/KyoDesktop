@@ -354,9 +354,14 @@ function dates(def: StateDef): number[] {
   /** Tout ce dont le solveur se sert : si rien ne bouge, une date suffit. */
   const signature = (p: Pose) =>
     JSON.stringify([p.gaze, p.split, p.eyes, p.sil.rot, p.sil.cx, p.sil.cy, p.sil.sx, p.sil.sy])
-  if (signature(def.pose(0)) === signature(def.pose(def.duration))) return [0]
-  const n = 3
-  return Array.from({ length: n }, (_, i) => (i / (n - 1)) * def.duration)
+  const sig0 = signature(def.pose(0))
+  if (
+    sig0 === signature(def.pose(def.duration * 0.37)) &&
+    sig0 === signature(def.pose(def.duration))
+  ) {
+    return [0]
+  }
+  return [0, def.duration * 0.33, def.duration * 0.67]
 }
 
 /** Le decalage d'une forme sur un etat et une expression, derive comprise. */
