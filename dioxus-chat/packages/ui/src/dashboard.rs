@@ -12,7 +12,7 @@
 use dioxus::prelude::*;
 use crate::models::ActiveView;
 use crate::settings::{
-    analyze_token, clear_session_auth, load_auth_token, load_server_url,
+    analyze_token, load_auth_token, load_server_url,
     save_full_session_config, sanitize_token, shared_probe_client, validate_token_security,
 };
 use crate::sidecar::{SidecarConnectionStatus, SidecarState};
@@ -178,18 +178,9 @@ fn get_current_time_str() -> String {
     format!("{:02}:{:02}:{:02} UTC", hr, min, sec)
 }
 
-/// Abre una URL en el navegador predeterminado del sistema operativo.
+/// Abre una URL en el navegador predeterminado del sistema operativo (sin shell).
 pub(crate) fn open_in_browser(url: &str) {
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
-            .spawn();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
+    let _ = crate::oauth::open_browser_safe(url);
 }
 
 /// Extrae `{ id, name }` del arreglo `data` de una respuesta paginada.
@@ -284,6 +275,95 @@ pub async fn probe_kyo_backend(
     } else {
         format!("{clean_url}/api/v1")
     };
+
+    // Modo Token de Proyecto (kyo_link_...): acceso acotado a un solo Espacio (default-deny en /spaces y /vaults)
+    if trimmed_token.starts_with("kyo_link_") {
+        let auth_header = format!("Bearer {trimmed_token}");
+        let self_url = format!("{api_base}/project-links/self");
+        let me_url = format!("{api_base}/auth/me");
+        let start = std::time::Instant::now();
+        let (self_res, me_res) = tokio::join!(
+            client
+                .get(&self_url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+                .send(),
+            client
+                .get(&me_url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+                .send(),
+        );
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let res = self_res.map_err(|e| {
+            (
+                format!("No se pudo conectar con '{clean_url}': {e}"),
+                false,
+                None,
+            )
+        })?;
+        let status_code = res.status().as_u16();
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err((
+                "Token de proyecto (kyo_link_...) inválido, revocado o vencido. Renuévalo en Proyectos & CLI.".to_string(),
+                true,
+                Some(status_code),
+            ));
+        }
+        if !res.status().is_success() {
+            return Err((
+                format!("El servidor respondió HTTP {status_code} al verificar el vínculo del proyecto."),
+                false,
+                Some(status_code),
+            ));
+        }
+        let self_json: serde_json::Value = res.json().await.unwrap_or_default();
+        let space_id = self_json.get("space_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let space_name = self_json
+            .get("space_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Espacio del proyecto")
+            .to_string();
+        let mut username = None;
+        let mut email = None;
+        if let Ok(mr) = me_res {
+            if mr.status().is_success() {
+                if let Ok(mj) = mr.json::<serde_json::Value>().await {
+                    let obj = mj.get("user").or_else(|| mj.get("data")).unwrap_or(&mj);
+                    username = obj.get("username").or_else(|| obj.get("name")).and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    email = obj.get("email").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                }
+            }
+        }
+        let spaces = if space_id.is_empty() {
+            Vec::new()
+        } else {
+            vec![CloudResource {
+                id: space_id,
+                name: space_name,
+                kind: CloudResourceKind::Space,
+            }]
+        };
+        let account = ConnectedAccountInfo {
+            user_id: None,
+            username: username.clone(),
+            role: Some("project".to_string()),
+            spaces_count: Some(spaces.len()),
+            vaults_count: Some(0),
+            primary_vault: None,
+            spaces,
+            vaults: Vec::new(),
+        };
+        let _ = save_full_session_config(
+            &trimmed_token,
+            &clean_url,
+            username.as_deref(),
+            email.as_deref(),
+            None,
+            None,
+        );
+        return Ok((latency_ms, account));
+    }
     let spaces_url = format!("{api_base}/spaces");
     let vaults_url = format!("{api_base}/vaults");
     let me_url = format!("{api_base}/auth/me");
@@ -461,15 +541,32 @@ pub async fn probe_kyo_backend(
         vaults,
     };
 
-    // Guardar en sesión local de Windows cifrada con DPAPI (%APPDATA%/kyo/session.json)
-    let _ = save_full_session_config(
-        &trimmed_token,
-        &clean_url,
-        username.as_deref(),
-        email.as_deref(),
-        primary_vault.as_deref(),
-        primary_vault_id.as_deref(),
-    );
+    // Preservar metadatos OAuth si el token vigente coincide con la sesión OAuth guardada
+    let is_existing_oauth = crate::settings::load_auth_method().as_deref() == Some("oauth")
+        && crate::settings::load_auth_token() == trimmed_token;
+    if is_existing_oauth {
+        let rt = crate::settings::load_refresh_token();
+        let exp = crate::settings::load_access_expires_at();
+        let cid = crate::settings::load_oauth_client_id().unwrap_or_else(|| crate::oauth::OAUTH_CLIENT_ID.to_string());
+        let _ = crate::settings::save_oauth_session(
+            &trimmed_token,
+            rt.as_deref(),
+            exp.as_deref(),
+            &cid,
+            &clean_url,
+            username.as_deref(),
+            email.as_deref(),
+        );
+    } else {
+        let _ = save_full_session_config(
+            &trimmed_token,
+            &clean_url,
+            username.as_deref(),
+            email.as_deref(),
+            primary_vault.as_deref(),
+            primary_vault_id.as_deref(),
+        );
+    }
 
     Ok((latency_ms, account))
 }
@@ -487,6 +584,8 @@ pub fn Dashboard() -> Element {
     let mut token_input = use_signal(load_auth_token);
     let server_url_input = use_signal(load_server_url);
     let mut is_verifying = use_signal(|| false);
+    let mut is_oauth_logging_in = use_signal(|| false);
+    let mut show_manual_token_box = use_signal(|| false);
     let mut last_error_msg = use_signal(|| Option::<String>::None);
     let flash_msg = use_signal(|| Option::<String>::None);
     let mut show_credentials = use_signal(|| false);
@@ -500,7 +599,7 @@ pub fn Dashboard() -> Element {
 
         let clean_token = sanitize_token(&raw_token);
         if clean_token.is_empty() {
-            last_error_msg.set(Some("Por favor ingrese un Token Key antes de conectar.".to_string()));
+            last_error_msg.set(Some("Por favor inicia sesión con Kyō o ingresa un Token Key.".to_string()));
             connection_status.set(ConnectionStatus::Disconnected);
             return;
         }
@@ -520,9 +619,26 @@ pub fn Dashboard() -> Element {
         let mut t_input = token_input;
 
         spawn(async move {
-            let ok = match probe_kyo_backend(&raw_url, &clean_token).await {
+            let mut token_for_probe = clean_token.clone();
+            if token_for_probe == load_auth_token() && crate::settings::load_refresh_token().is_some() {
+                if let Ok((_, fresh)) = crate::oauth::ensure_fresh_account_token(false).await {
+                    token_for_probe = fresh;
+                }
+            }
+
+            let mut probe_res = probe_kyo_backend(&raw_url, &token_for_probe).await;
+            if let Err((_, _, Some(401))) = probe_res {
+                if crate::settings::load_refresh_token().is_some() {
+                    if let Ok((_, fresh)) = crate::oauth::ensure_fresh_account_token(true).await {
+                        token_for_probe = fresh;
+                        probe_res = probe_kyo_backend(&raw_url, &token_for_probe).await;
+                    }
+                }
+            }
+
+            let ok = match probe_res {
                 Ok((lat, acc)) => {
-                    t_input.set(clean_token.clone());
+                    t_input.set(token_for_probe.clone());
                     conn_sig.set(ConnectionStatus::Connected {
                         latency_ms: lat,
                         server_url: raw_url.clone(),
@@ -573,9 +689,8 @@ pub fn Dashboard() -> Element {
         }
     });
 
-    // Acción: Desconectar y limpiar credenciales
+    // Acción: Desconectar, revocar OAuth (best effort) y limpiar credenciales
     let mut handle_disconnect = move || {
-        let _ = clear_session_auth();
         token_input.set(String::new());
         connection_status.set(ConnectionStatus::Disconnected);
         active_context.set(None);
@@ -588,6 +703,29 @@ pub fn Dashboard() -> Element {
             w.status = SidecarConnectionStatus::Disconnected;
             w.latency_ms = None;
         }
+        spawn(async move {
+            crate::oauth::logout_and_revoke().await;
+        });
+    };
+
+    // Acción: Inicio de sesión nativo OAuth 2.1 + PKCE en navegador
+    let mut handle_oauth_login = move || {
+        let raw_url = server_url_input.peek().clone();
+        is_oauth_logging_in.set(true);
+        last_error_msg.set(None);
+        spawn(async move {
+            match crate::oauth::browser_login(&raw_url).await {
+                Ok(outcome) => {
+                    token_input.set(outcome.tokens.access_token.clone());
+                    is_oauth_logging_in.set(false);
+                    run_probe(Some("Sesión iniciada con Kyō (OAuth 2.1)."));
+                }
+                Err(e) => {
+                    last_error_msg.set(Some(e));
+                    is_oauth_logging_in.set(false);
+                }
+            }
+        });
     };
 
     let is_loading = *is_verifying.read();
@@ -692,6 +830,12 @@ pub fn Dashboard() -> Element {
                                                 onclick: move |_| run_probe(Some("Datos sincronizados con Kyō Web.")),
                                                 Icon { d: ICON_REFRESH, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
                                                 if is_loading { "Sincronizando..." } else { "Sincronizar datos ahora" }
+                                            }
+                                            button {
+                                                class: "dk-btn dk-btn-secondary",
+                                                onclick: move |_| active_view.set(ActiveView::Projects),
+                                                "Proyectos & CLI"
+                                                Icon { d: ICON_FOLDER }
                                             }
                                             button {
                                                 class: "dk-btn dk-btn-secondary",
@@ -1047,11 +1191,10 @@ pub fn Dashboard() -> Element {
                                 }
                             }
                         } else {
-                            // Desconectado / comprobando / error: Token Key en primer plano.
+                            // Desconectado / comprobando / error: Login OAuth 2.1 en navegador en primer plano + opción Token manual.
                             let has_token = !token_input.read().trim().is_empty();
-                            let step1 = if has_token { "dk-step is-done" } else { "dk-step is-current" };
-                            let step2 = if has_token { "dk-step is-done" } else { "dk-step" };
-                            let step3 = if has_token { "dk-step is-current" } else { "dk-step" };
+                            let logging_in = *is_oauth_logging_in.read();
+                            let manual_open = *show_manual_token_box.read() || has_token;
                             rsx! {
                                 div {
                                     class: "dk-bento",
@@ -1063,70 +1206,63 @@ pub fn Dashboard() -> Element {
                                             div { class: "dk-card-head-icon dk-tone-accent", Icon { d: ICON_KEY } }
                                             div {
                                                 class: "dk-card-head-text",
-                                                h3 { "Clave de Acceso (Token Key)" }
-                                                p { class: "dk-muted", "Conecta este cliente de escritorio con tu cuenta de Kyō Web en tres pasos." }
+                                                h3 { "Iniciar sesión en Kyō" }
+                                                p { class: "dk-muted", "Conecta tu cuenta mediante el navegador (OAuth 2.1 + PKCE con renovación automática) o pega un token manual." }
                                             }
-                                        }
-
-                                        ol {
-                                            class: "dk-steps",
-                                            li {
-                                                class: "{step1}",
-                                                span { class: "dk-step-num", if has_token { Icon { d: ICON_CHECK, class: "dk-ic-sm" } } else { "1" } }
-                                                div {
-                                                    class: "dk-step-body",
-                                                    span { class: "dk-step-title", "Obtener Token en la Web" }
-                                                    span { class: "dk-muted", "Genera tu Token Key desde tu cuenta en kyo.broco.dev." }
-                                                    button {
-                                                        class: "dk-btn dk-btn-ghost dk-btn-xs",
-                                                        onclick: move |_| open_in_browser(KYO_MCP_URL),
-                                                        "Abrir kyo.broco.dev"
-                                                        Icon { d: ICON_EXTERNAL, class: "dk-ic-sm" }
-                                                    }
-                                                }
-                                            }
-                                            li {
-                                                class: "{step2}",
-                                                span { class: "dk-step-num", if has_token { Icon { d: ICON_CHECK, class: "dk-ic-sm" } } else { "2" } }
-                                                div {
-                                                    class: "dk-step-body",
-                                                    span { class: "dk-step-title", "Pegar Token" }
-                                                    span { class: "dk-muted", "Pégalo en el campo de abajo. Se guarda solo en este equipo." }
-                                                }
-                                            }
-                                            li {
-                                                class: "{step3}",
-                                                span { class: "dk-step-num", "3" }
-                                                div {
-                                                    class: "dk-step-body",
-                                                    span { class: "dk-step-title", "Conectar y Sincronizar" }
-                                                    span { class: "dk-muted", "Validamos el token y traemos tus espacios y bóvedas." }
-                                                }
-                                            }
-                                        }
-
-                                        CredentialFields {
-                                            token_input,
-                                            server_url_input,
-                                            last_error: last_error_msg,
-                                            on_submit: move |_| run_probe(Some("Credenciales verificadas y guardadas en session.json.")),
                                         }
 
                                         div {
                                             class: "dk-row-actions",
                                             button {
                                                 class: "dk-btn dk-btn-primary dk-btn-lg",
-                                                disabled: is_loading || !has_token,
-                                                onclick: move |_| run_probe(Some("Credenciales verificadas y guardadas en session.json.")),
-                                                Icon { d: if is_loading { ICON_REFRESH } else { ICON_CHECK }, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
-                                                if is_loading { "Verificando..." } else { "Conectar y Sincronizar" }
+                                                disabled: logging_in || is_loading,
+                                                onclick: move |_| handle_oauth_login(),
+                                                Icon { d: if logging_in { ICON_REFRESH } else { ICON_EXTERNAL }, class: if logging_in { "dk-ic animate-spin" } else { "dk-ic" } }
+                                                if logging_in { "Esperando autorización en navegador..." } else { "Iniciar sesión con Kyō (Navegador)" }
                                             }
-                                            if has_token {
-                                                button {
-                                                    class: "dk-btn dk-btn-danger",
-                                                    onclick: move |_| handle_disconnect(),
-                                                    Icon { d: ICON_POWER }
-                                                    "Olvidar token"
+                                            button {
+                                                class: "dk-btn dk-btn-ghost",
+                                                onclick: move |_| {
+                                                    let cur = *show_manual_token_box.read();
+                                                    show_manual_token_box.set(!cur);
+                                                },
+                                                if manual_open { "Ocultar token manual" } else { "Usar token manual (kyo_mcp_ / kyo_link_)" }
+                                            }
+                                        }
+
+                                        if let Some(err) = last_error_msg.read().as_ref() {
+                                            if !manual_open {
+                                                p { class: "dk-field-error", "{err}" }
+                                            }
+                                        }
+
+                                        if manual_open {
+                                            div {
+                                                class: "space-y-4 pt-3 border-t border-zinc-800/80",
+                                                CredentialFields {
+                                                    token_input,
+                                                    server_url_input,
+                                                    last_error: last_error_msg,
+                                                    on_submit: move |_| run_probe(Some("Credenciales verificadas y guardadas en session.json.")),
+                                                }
+
+                                                div {
+                                                    class: "dk-row-actions",
+                                                    button {
+                                                        class: "dk-btn dk-btn-secondary",
+                                                        disabled: is_loading || !has_token,
+                                                        onclick: move |_| run_probe(Some("Credenciales verificadas y guardadas en session.json.")),
+                                                        Icon { d: if is_loading { ICON_REFRESH } else { ICON_CHECK }, class: if is_loading { "dk-ic animate-spin" } else { "dk-ic" } }
+                                                        if is_loading { "Verificando..." } else { "Conectar con Token" }
+                                                    }
+                                                    if has_token {
+                                                        button {
+                                                            class: "dk-btn dk-btn-danger",
+                                                            onclick: move |_| handle_disconnect(),
+                                                            Icon { d: ICON_POWER }
+                                                            "Olvidar token"
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }

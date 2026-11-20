@@ -93,6 +93,10 @@ const {
   lastProbeResult,
   tokenValidation,
   isVerifying,
+  isLoggingIn,
+  hasRefreshToken,
+  accessExpiresAt,
+  authMethod,
   accountInfo,
   availableProfiles,
   activeProfileId,
@@ -101,9 +105,12 @@ const {
   initBridge,
   refreshHealth,
   saveConnectionSettings,
+  loginWithBrowser,
+  logoutSession,
 } = useKyoBridge();
 
 const showToken = ref(false);
+const showManualToken = ref(false);
 const serverUrlDraft = ref(serverUrl.value || DEFAULT_MCP_SERVER_URL);
 const tokenDraft = ref('');
 const isSavingConnection = ref(false);
@@ -200,6 +207,28 @@ async function handleSaveAndVerifyConnection() {
 
 async function handleTestConnectionNow() {
   await refreshHealth(serverUrlDraft.value, tokenDraft.value);
+}
+
+async function handleOAuthLogin() {
+  saveFeedback.value = null;
+  const res = await loginWithBrowser(serverUrlDraft.value);
+  saveFeedback.value = {
+    success: res.success,
+    message: res.message,
+  };
+  if (res.success) {
+    triggerSaveFeedback();
+  }
+}
+
+async function handleOAuthLogout() {
+  saveFeedback.value = null;
+  await logoutSession();
+  tokenDraft.value = '';
+  saveFeedback.value = {
+    success: true,
+    message: 'Sesión cerrada en Kyō Desktop.',
+  };
 }
 
 let saveTimeout: number | undefined;
@@ -1802,34 +1831,83 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- Tarjeta 3: Token JWT & Autenticación (Estándares RFC 7519 / RFC 6750) -->
+            <!-- Tarjeta 3: Inicio de Sesión OAuth 2.1 (Navegador) y Token Manual -->
             <div class="kyo-card p-4 space-y-4">
-              <div>
-                <div class="flex items-center justify-between">
-                  <label class="kyo-label">Token de Autenticación (Token MCP / JWT)</label>
-                  <span
-                    v-if="liveJwtValidation.valid"
-                    class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono"
-                  >
-                    ✓ {{ tokenDraft.trim().startsWith('kyo_mcp_') ? 'Token MCP Válido' : 'Estructura JWT Válida' }}
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <label class="kyo-label">Sesión de Cuenta Kyō (OAuth 2.1 + PKCE)</label>
+                    <span
+                      v-if="authMethod === 'oauth' && jwtToken"
+                      class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono"
+                    >
+                      OAuth Activo{{ hasRefreshToken ? ' · Auto-refresh' : '' }}
+                    </span>
+                    <span
+                      v-else-if="liveJwtValidation.valid"
+                      class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono"
+                    >
+                      ✓ {{ tokenDraft.trim().startsWith('kyo_mcp_') ? 'Token MCP' : tokenDraft.trim().startsWith('kyo_link_') ? 'Token Proyecto' : 'Token Válido' }}
+                    </span>
+                  </div>
+                  <span class="kyo-hint">
+                    Inicia sesión directamente en tu navegador sin copiar ni pegar tokens. Renovación automática de sesión integrada.
                   </span>
+                </div>
+              </div>
+
+              <!-- Botones principales de OAuth -->
+              <div class="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  class="kyo-btn text-xs font-semibold px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/20"
+                  :disabled="isLoggingIn || !liveUrlValidation.valid"
+                  @click="handleOAuthLogin"
+                >
+                  <KyoIcon name="sparkles" class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoggingIn }" />
+                  {{ isLoggingIn ? 'Esperando autorización en navegador...' : jwtToken ? 'Reconectar con Navegador' : 'Iniciar sesión con Kyō' }}
+                </button>
+
+                <button
+                  v-if="jwtToken"
+                  type="button"
+                  class="kyo-btn text-xs text-rose-300 border-rose-500/30 hover:bg-rose-500/10"
+                  @click="handleOAuthLogout"
+                >
+                  <KyoIcon name="power" class="w-3.5 h-3.5" />
+                  Cerrar sesión
+                </button>
+
+                <button
+                  type="button"
+                  class="kyo-chip text-[11px] py-1.5 px-2.5 text-zinc-400 hover:text-zinc-200 ml-auto"
+                  @click="showManualToken = !showManualToken"
+                >
+                  {{ showManualToken ? 'Ocultar token manual' : 'Usar token manual (kyo_mcp_ / JWT)' }}
+                </button>
+              </div>
+
+              <div v-if="accessExpiresAt && jwtToken" class="text-[11px] font-mono text-zinc-400">
+                Vigencia del access token: <span class="text-zinc-200">{{ new Date(accessExpiresAt).toLocaleString() }}</span>
+              </div>
+
+              <!-- Sección avanzada colapsable para Token manual -->
+              <div v-if="showManualToken" class="space-y-3 pt-3 border-t border-zinc-800/80">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-zinc-300">Token manual (kyo_mcp_…, kyo_link_… o JWT)</span>
                   <span
-                    v-else-if="liveJwtValidation.isExpired"
+                    v-if="liveJwtValidation.isExpired"
                     class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20 font-mono"
                   >
                     ✗ Token Expirado
                   </span>
                   <span
-                    v-else-if="tokenDraft"
+                    v-else-if="tokenDraft && !liveJwtValidation.valid"
                     class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono"
                   >
                     ! Formato No Válido
                   </span>
                 </div>
-                <span class="kyo-hint">
-                  Token MCP generado en <code class="font-mono">kyo.broco.dev/mcp</code> o JWT de cuenta para conectar el escritorio con los servicios de Kyō.
-                </span>
-              </div>
 
               <div class="space-y-2">
                 <div class="relative flex items-center">
@@ -1839,7 +1917,7 @@ onBeforeUnmount(() => {
                   <input
                     v-model="tokenDraft"
                     :type="showToken ? 'text' : 'password'"
-                    placeholder="Pega aquí tu Token Key (kyo_mcp_... o eyJhbGci...)"
+                    placeholder="Pega aquí tu Token Key (kyo_mcp_..., kyo_link_... o eyJhbGci...)"
                     class="w-full text-xs font-mono pl-9 pr-10 py-2 rounded-xl bg-zinc-900 border text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 transition-colors"
                     :class="
                       !tokenDraft
@@ -1909,6 +1987,19 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
+              <div class="flex items-center justify-end pt-1">
+                <button
+                  type="button"
+                  class="kyo-btn text-xs font-semibold px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100"
+                  :disabled="isSavingConnection || !liveUrlValidation.valid"
+                  @click="handleSaveAndVerifyConnection"
+                >
+                  <KyoIcon name="check" class="w-3.5 h-3.5" :class="{ 'animate-spin': isSavingConnection }" />
+                  {{ isSavingConnection ? 'Verificando...' : 'Guardar Token Manual' }}
+                </button>
+              </div>
+              </div>
+
               <!-- Mensaje de Feedback de Guardado -->
               <div
                 v-if="saveFeedback"
@@ -1923,20 +2014,11 @@ onBeforeUnmount(() => {
                 <span>{{ saveFeedback.message }}</span>
               </div>
 
-              <!-- Botones de Acción -->
+              <!-- Pie informativo -->
               <div class="flex items-center justify-between pt-2 border-t border-zinc-800">
                 <span class="text-[11px] text-zinc-500 font-mono">
-                  Persistencia segura en <code class="text-zinc-400">%APPDATA%/kyo/session.json</code>
+                  Persistencia segura cifrada en <code class="text-zinc-400">session.json</code>
                 </span>
-                <button
-                  type="button"
-                  class="kyo-btn text-xs font-semibold px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/20"
-                  :disabled="isSavingConnection || !liveUrlValidation.valid"
-                  @click="handleSaveAndVerifyConnection"
-                >
-                  <KyoIcon name="check" class="w-3.5 h-3.5" :class="{ 'animate-spin': isSavingConnection }" />
-                  {{ isSavingConnection ? 'Verificando con Servidor...' : 'Guardar y Validar Conexión' }}
-                </button>
               </div>
             </div>
           </section>

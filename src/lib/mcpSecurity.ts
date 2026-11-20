@@ -16,6 +16,7 @@ export interface JwtClaims {
 export interface JwtValidationResult {
   valid: boolean;
   isExpired: boolean;
+  tokenKind?: 'jwt' | 'kyo_mcp' | 'kyo_link' | 'opaque';
   error?: string;
   claims?: JwtClaims;
   expiresAtFormatted?: string;
@@ -54,6 +55,8 @@ export interface ConnectionProbeResult {
   httpCode?: number;
   latencyMs: number;
   message: string;
+  isProjectScoped?: boolean;
+  projectSpaceName?: string;
   claims?: JwtClaims;
   account?: KyoAccountInfo;
   profiles?: KyoProfileInfo[];
@@ -214,6 +217,7 @@ export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
       return {
         valid: false,
         isExpired: false,
+        tokenKind: 'kyo_mcp',
         error: 'El Token MCP (kyo_mcp_...) está incompleto o truncado (mínimo 16 caracteres tras el prefijo).',
       };
     }
@@ -221,12 +225,14 @@ export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
       return {
         valid: false,
         isExpired: false,
+        tokenKind: 'kyo_mcp',
         error: 'El Token MCP contiene caracteres no permitidos.',
       };
     }
     return {
       valid: true,
       isExpired: false,
+      tokenKind: 'kyo_mcp',
       remainingDays: 30,
       claims: {
         userId: 'mcp_user',
@@ -236,12 +242,57 @@ export function parseAndValidateJwt(rawToken: string): JwtValidationResult {
     };
   }
 
+  // Soporte nativo para Tokens de vínculo de proyecto (kyo_link_...)
+  if (token.startsWith('kyo_link_')) {
+    const suffix = token.slice('kyo_link_'.length);
+    if (suffix.length < 16) {
+      return {
+        valid: false,
+        isExpired: false,
+        tokenKind: 'kyo_link',
+        error: 'El Token de proyecto (kyo_link_...) está incompleto o truncado.',
+      };
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(suffix)) {
+      return {
+        valid: false,
+        isExpired: false,
+        tokenKind: 'kyo_link',
+        error: 'El Token de proyecto contiene caracteres no permitidos.',
+      };
+    }
+    return {
+      valid: true,
+      isExpired: false,
+      tokenKind: 'kyo_link',
+      remainingDays: 30,
+      claims: {
+        userId: 'project_link',
+        role: 'project',
+        rawPayload: { type: 'project_link_token', prefix: 'kyo_link' },
+      },
+    };
+  }
+
   const parts = token.split('.');
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+    // Tokens OAuth opacos emitidos por el servidor
+    if (token.length >= 16 && token.length <= 4096 && /^[A-Za-z0-9._~+/=-]+$/.test(token)) {
+      return {
+        valid: true,
+        isExpired: false,
+        tokenKind: 'opaque',
+        claims: {
+          userId: 'oauth_user',
+          role: 'oauth',
+          rawPayload: { type: 'opaque_token' },
+        },
+      };
+    }
     return {
       valid: false,
       isExpired: false,
-      error: 'Estructura de token no válida (se espera Token MCP kyo_mcp_... o JWT firmado de 3 segmentos).',
+      error: 'Estructura de token no válida (se espera sesión OAuth, kyo_mcp_..., kyo_link_... o JWT).',
     };
   }
 
@@ -425,11 +476,14 @@ export async function probeMcpConnection(
         credentials: 'omit',
       };
 
-      // Lanzar /health, /auth/me y /vaults en paralelo en un único RTT (multiplexado HTTP/2)
-      const [healthSettled, meSettled, vaultsSettled] = await Promise.allSettled([
+      const isProjectToken = token.startsWith('kyo_link_');
+
+      // Lanzar /health, /auth/me y /vaults (o /project-links/self si es kyo_link_) en paralelo
+      const [healthSettled, meSettled, vaultsSettled, selfSettled] = await Promise.allSettled([
         fetch(probeEndpoint, fetchInit),
         token ? fetch(`${apiBase}/auth/me`, fetchInit) : Promise.resolve(null),
-        token ? fetch(`${apiBase}/vaults`, fetchInit) : Promise.resolve(null),
+        token && !isProjectToken ? fetch(`${apiBase}/vaults`, fetchInit) : Promise.resolve(null),
+        token && isProjectToken ? fetch(`${apiBase}/project-links/self`, fetchInit) : Promise.resolve(null),
       ]);
 
       clearTimeout(timer);
@@ -438,9 +492,10 @@ export async function probeMcpConnection(
       const healthRes = healthSettled.status === 'fulfilled' ? healthSettled.value : null;
       const meRes = meSettled.status === 'fulfilled' ? meSettled.value : null;
       const vaultsRes = vaultsSettled.status === 'fulfilled' ? vaultsSettled.value : null;
+      const selfRes = selfSettled.status === 'fulfilled' ? selfSettled.value : null;
 
       // Si ninguna petición logró respuesta de red
-      if (!healthRes && !meRes && !vaultsRes) {
+      if (!healthRes && !meRes && !vaultsRes && !selfRes) {
         const err = healthSettled.status === 'rejected' ? healthSettled.reason : new Error('Error de red');
         const isAbort = (err as Error)?.name === 'AbortError';
         return {
@@ -456,13 +511,13 @@ export async function probeMcpConnection(
       }
 
       // Verificar si alguno de los endpoints autenticados rechazó el token (incluso si /health es público 200 OK)
-      const statusCodes = [healthRes?.status, meRes?.status, vaultsRes?.status].filter(
+      const statusCodes = [healthRes?.status, meRes?.status, vaultsRes?.status, selfRes?.status].filter(
         (s): s is number => typeof s === 'number'
       );
 
       if (statusCodes.includes(401)) {
         let serverErr = 'Token inválido, revocado o expirado';
-        const unauthorizedRes = [meRes, vaultsRes, healthRes].find((r) => r?.status === 401);
+        const unauthorizedRes = [meRes, selfRes, vaultsRes, healthRes].find((r) => r?.status === 401);
         if (unauthorizedRes) {
           try {
             const body = await unauthorizedRes.json();
@@ -483,7 +538,7 @@ export async function probeMcpConnection(
         };
       }
 
-      if (statusCodes.includes(403) && !meRes?.ok && !vaultsRes?.ok) {
+      if (statusCodes.includes(403) && !meRes?.ok && !vaultsRes?.ok && !selfRes?.ok) {
         return {
           reachable: true,
           authenticated: false,
@@ -495,20 +550,27 @@ export async function probeMcpConnection(
         };
       }
 
-      const primaryStatus = meRes?.status ?? vaultsRes?.status ?? healthRes?.status ?? 200;
+      const primaryStatus = selfRes?.status ?? meRes?.status ?? vaultsRes?.status ?? healthRes?.status ?? 200;
       const isOk = Boolean(
-        healthRes?.ok || meRes?.ok || vaultsRes?.ok || (healthRes?.status === 404 && token)
+        healthRes?.ok || meRes?.ok || vaultsRes?.ok || selfRes?.ok || (healthRes?.status === 404 && token)
       );
 
       if (isOk) {
         let account: KyoAccountInfo | undefined = undefined;
         let profiles: KyoProfileInfo[] | undefined = undefined;
+        let projectSpaceName: string | undefined = undefined;
 
         if (token) {
-          const [meJsonSettled, vaultsJsonSettled] = await Promise.allSettled([
+          const [meJsonSettled, vaultsJsonSettled, selfJsonSettled] = await Promise.allSettled([
             meRes && meRes.ok ? meRes.json() : Promise.resolve(null),
             vaultsRes && vaultsRes.ok ? vaultsRes.json() : Promise.resolve(null),
+            selfRes && selfRes.ok ? selfRes.json() : Promise.resolve(null),
           ]);
+
+          const selfData = selfJsonSettled.status === 'fulfilled' ? selfJsonSettled.value : null;
+          if (selfData && typeof selfData.space_name === 'string') {
+            projectSpaceName = selfData.space_name;
+          }
 
           const meData = meJsonSettled.status === 'fulfilled' ? meJsonSettled.value : null;
           if (meData) {
@@ -558,9 +620,13 @@ export async function probeMcpConnection(
           status: token ? 'connected_verified' : 'connected_unauthenticated',
           httpCode: primaryStatus,
           latencyMs,
-          message: token
+          message: isProjectToken
+            ? `Token de proyecto válido (Espacio: ${projectSpaceName || 'acotado'}).`
+            : token
             ? 'Conexión exitosa y Token validado con el servidor MCP.'
             : 'Conexión con el servidor disponible (Modo anónimo / sin token).',
+          isProjectScoped: isProjectToken,
+          projectSpaceName,
           claims,
           account,
           profiles,

@@ -6024,10 +6024,12 @@ dependencies = [
  "dioxus",
  "eventsource-stream",
  "futures-util",
+ "getrandom 0.2.17",
  "reqwest",
  "rfd",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "windows",
 ]

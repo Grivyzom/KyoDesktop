@@ -8,6 +8,7 @@ static WS_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ActiveView {
     Dashboard,
+    Projects,
     Chat,
     Vault,
 }

@@ -274,6 +274,47 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                         }
                     }
 
+                    // Navigation Button: "Proyectos & CLI"
+                    {
+                        let is_projects_view = active_view.map(|av| *av.read() == ActiveView::Projects).unwrap_or(false);
+                        let linked_count = crate::kyo_cli::list_registered_roots().len();
+                        rsx! {
+                            button {
+                                class: if is_projects_view { "sidebar-btn-nav active justify-between" } else { "sidebar-btn-nav justify-between" },
+                                title: "Vincular proyectos, gestionar tokens y herramientas MCP (kyo-cli)",
+                                onclick: move |_| {
+                                    if let Some(mut s) = is_settings_open {
+                                        s.0.set(false);
+                                    }
+                                    if let Some(mut av) = active_view {
+                                        av.set(ActiveView::Projects);
+                                    }
+                                },
+                                div {
+                                    class: "flex items-center gap-2.5",
+                                    svg {
+                                        class: "w-4 h-4 text-emerald-400 flex-none",
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        stroke: "currentColor",
+                                        stroke_width: "2",
+                                        stroke_linecap: "round",
+                                        stroke_linejoin: "round",
+                                        polyline { points: "4 17 10 11 4 5" }
+                                        line { x1: "12", y1: "19", x2: "20", y2: "19" }
+                                    }
+                                    span { "Proyectos & CLI" }
+                                }
+                                if linked_count > 0 {
+                                    span {
+                                        class: "text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30",
+                                        "{linked_count}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Navigation Button: "Bóveda"
                     {
                         let is_vault_view = active_view.map(|av| *av.read() == ActiveView::Vault).unwrap_or(false);

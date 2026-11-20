@@ -5,8 +5,8 @@ use ui::{
     detect_windows_theme_is_dark, load_font_family, load_theme_mode, load_theme_preference,
     load_downloads_dir, spawn_music_monitor, spawn_sidecar_service, terminate_sidecar, ActiveView,
     AppDownloadsDir, AppFont, AppTheme, AppThemeMode, ChatContainer, Dashboard, IsSettingsOpen,
-    KyoCloud, MusicContext, SettingsModal, SettingsTab, Sidebar, SidecarState, ThemePreference,
-    VaultView, Workspace,
+    KyoCloud, MusicContext, ProjectsView, SettingsModal, SettingsTab, Sidebar, SidecarState,
+    ThemePreference, VaultView, Workspace,
 };
 
 
@@ -313,6 +313,7 @@ fn App() -> Element {
                     class: "flex-1 min-w-0 h-full overflow-hidden",
                     match *active_view.read() {
                         ActiveView::Dashboard => rsx! { Dashboard {} },
+                        ActiveView::Projects => rsx! { ProjectsView {} },
                         ActiveView::Chat => rsx! { ChatContainer {} },
                         ActiveView::Vault => rsx! { VaultView {} },
                     }

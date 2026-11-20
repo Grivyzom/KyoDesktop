@@ -8,6 +8,7 @@ pub mod sidecar;
 pub mod font_manager;
 pub mod avatar_desktop;
 pub mod music_detector;
+pub mod oauth;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Comando: posición del cursor relativa al centro del avatar (multi-monitor).
@@ -571,6 +572,10 @@ pub struct SessionConfig {
     pub username: Option<String>,
     pub email: Option<String>,
     pub updated_at: Option<u64>,
+    #[serde(default)]
+    pub has_refresh_token: bool,
+    pub access_expires_at: Option<String>,
+    pub auth_method: Option<String>,
 }
 
 static SESSION_CONFIG_CACHE: std::sync::OnceLock<
@@ -602,9 +607,129 @@ pub fn get_kyo_data_dir() -> Option<std::path::PathBuf> {
 fn write_session_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
     let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, content).map_err(|e| format!("Error escribiendo temporal session.json: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
     if std::fs::rename(&tmp_path, path).is_err() {
         std::fs::write(path, content).map_err(|e| format!("Error escribiendo session.json: {e}"))?;
         let _ = std::fs::remove_file(&tmp_path);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+pub fn save_oauth_session_internal(
+    access_token: &str,
+    refresh_token: Option<&str>,
+    access_expires_at: Option<&str>,
+    client_id: &str,
+    server_url: &str,
+    username: Option<&str>,
+    email: Option<&str>,
+) -> Result<(), String> {
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let kyo_dir = get_kyo_data_dir().ok_or_else(|| "No se pudo determinar directorio de datos Kyo".to_string())?;
+    let _ = std::fs::create_dir_all(&kyo_dir);
+    let session_file = kyo_dir.join("session.json");
+
+    let mut map: serde_json::Map<String, serde_json::Value> = if session_file.is_file() {
+        std::fs::read_to_string(&session_file)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
+
+    map.insert(
+        "token".to_string(),
+        serde_json::Value::String(token_crypto::encrypt_token_for_disk(access_token)),
+    );
+    map.remove("access_token");
+    if let Some(rt) = refresh_token.filter(|s| !s.trim().is_empty()) {
+        map.insert(
+            "refresh_token".to_string(),
+            serde_json::Value::String(token_crypto::encrypt_token_for_disk(rt)),
+        );
+    }
+    if let Some(exp) = access_expires_at.filter(|s| !s.trim().is_empty()) {
+        map.insert("access_expires_at".to_string(), serde_json::Value::String(exp.to_string()));
+    } else {
+        map.remove("access_expires_at");
+    }
+    map.insert("oauth_client_id".to_string(), serde_json::Value::String(client_id.to_string()));
+    map.insert("auth_method".to_string(), serde_json::Value::String("oauth".to_string()));
+    map.insert("server_url".to_string(), serde_json::Value::String(server_url.to_string()));
+    if let Some(u) = username.filter(|s| !s.trim().is_empty()) {
+        map.insert("username".to_string(), serde_json::Value::String(u.to_string()));
+    }
+    if let Some(e) = email.filter(|s| !s.trim().is_empty()) {
+        map.insert("email".to_string(), serde_json::Value::String(e.to_string()));
+    }
+    map.insert("updated_at".to_string(), serde_json::json!(now_ts));
+
+    write_session_atomic(&session_file, &serde_json::Value::Object(map).to_string())?;
+    if let Ok(mut guard) = session_config_cache().write() {
+        guard.0 = None;
+    }
+    Ok(())
+}
+
+pub fn get_stored_refresh_token() -> Option<(String, Option<String>)> {
+    let kyo_dir = get_kyo_data_dir()?;
+    let session_file = kyo_dir.join("session.json");
+    let content = std::fs::read_to_string(&session_file).ok()?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&content).ok()?;
+    let raw_rt = map.get("refresh_token").and_then(|v| v.as_str())?;
+    let rt = token_crypto::decrypt_token_from_disk(raw_rt)?;
+    if rt.trim().is_empty() {
+        return None;
+    }
+    let cid = map
+        .get("oauth_client_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Some((rt, cid))
+}
+
+pub fn clear_session_config_internal() -> Result<(), String> {
+    if let Some(kyo_dir) = get_kyo_data_dir() {
+        let session_file = kyo_dir.join("session.json");
+        if session_file.is_file() {
+            let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&session_file)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_default();
+            for key in [
+                "token",
+                "access_token",
+                "refresh_token",
+                "access_expires_at",
+                "oauth_client_id",
+                "auth_method",
+                "username",
+                "email",
+                "active_profile_id",
+                "active_profile_name",
+            ] {
+                map.remove(key);
+            }
+            write_session_atomic(&session_file, &serde_json::Value::Object(map).to_string())?;
+        }
+        if let Ok(mut guard) = session_config_cache().write() {
+            guard.0 = None;
+            guard.1 = SessionConfig::default();
+        }
     }
     Ok(())
 }
@@ -659,6 +784,10 @@ fn save_session_config(
         let encrypted_token = token_crypto::encrypt_token_for_disk(&trimmed_token);
         map.insert("token".to_string(), serde_json::Value::String(encrypted_token));
         map.remove("access_token");
+        map.remove("refresh_token");
+        map.remove("access_expires_at");
+        map.remove("oauth_client_id");
+        map.insert("auth_method".to_string(), serde_json::Value::String("manual".to_string()));
         if let Some(ref url) = trimmed_url {
             map.insert("server_url".to_string(), serde_json::Value::String(url.clone()));
         }
@@ -690,6 +819,9 @@ fn save_session_config(
                 username: username.or(prev.username),
                 email: email.or(prev.email),
                 updated_at: Some(now_ts),
+                has_refresh_token: false,
+                access_expires_at: None,
+                auth_method: Some("manual".to_string()),
             };
         }
     }
@@ -748,6 +880,15 @@ fn get_session_config() -> SessionConfig {
                     }
                     if let Some(ts) = map.get("updated_at").and_then(|v| v.as_u64()) {
                         config.updated_at = Some(ts);
+                    }
+                    if let Some(rt) = map.get("refresh_token").and_then(|v| v.as_str()) {
+                        config.has_refresh_token = !rt.trim().is_empty();
+                    }
+                    if let Some(exp) = map.get("access_expires_at").and_then(|v| v.as_str()) {
+                        config.access_expires_at = Some(exp.to_string());
+                    }
+                    if let Some(am) = map.get("auth_method").and_then(|v| v.as_str()) {
+                        config.auth_method = Some(am.to_string());
                     }
 
                     // Migrar transparentemente tokens antiguos en texto plano a DPAPI
@@ -1349,6 +1490,9 @@ pub fn run() {
             get_session_token,
             save_session_config,
             get_session_config,
+            oauth::oauth_login,
+            oauth::oauth_refresh,
+            oauth::oauth_logout,
             font_manager::get_system_fonts,
             font_manager::install_bundled_font,
             font_manager::save_font_preference,

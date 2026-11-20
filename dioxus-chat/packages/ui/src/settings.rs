@@ -261,6 +261,10 @@ pub fn decrypt_token_from_storage(stored: &str) -> String {
 #[derive(Clone, Debug, Default)]
 struct CachedSession {
     token: String,
+    refresh_token: Option<String>,
+    access_expires_at: Option<String>,
+    oauth_client_id: Option<String>,
+    auth_method: Option<String>,
     server_url: String,
     username: Option<String>,
     email: Option<String>,
@@ -273,29 +277,51 @@ struct CachedSession {
 
 static SESSION_CACHE: OnceLock<RwLock<CachedSession>> = OnceLock::new();
 
-fn get_kyo_session_file_path() -> Option<PathBuf> {
+pub fn get_kyo_data_dir() -> Option<PathBuf> {
     if let Ok(appdata) = std::env::var("APPDATA") {
-        return Some(PathBuf::from(appdata).join("kyo").join("session.json"));
+        return Some(PathBuf::from(appdata).join("kyo"));
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(xdg).join("kyo").join("session.json"));
+        return Some(PathBuf::from(xdg).join("kyo"));
     }
     if let Ok(home) = std::env::var("HOME") {
-        return Some(PathBuf::from(home).join(".config").join("kyo").join("session.json"));
+        #[cfg(target_os = "macos")]
+        return Some(PathBuf::from(home).join("Library").join("Application Support").join("kyo"));
+        #[cfg(not(target_os = "macos"))]
+        return Some(PathBuf::from(home).join(".config").join("kyo"));
     }
     None
+}
+
+fn get_kyo_session_file_path() -> Option<PathBuf> {
+    get_kyo_data_dir().map(|d| d.join("session.json"))
 }
 
 /// Escritura atómica mediante archivo temporal para evitar corrupción en lecturas concurrentes.
 fn write_json_atomic(target: &std::path::Path, content: &str) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let tmp_path = target.with_extension("json.tmp");
     std::fs::write(&tmp_path, content).map_err(|e| format!("Error escribiendo archivo temporal: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
     if std::fs::rename(&tmp_path, target).is_err() {
         std::fs::write(target, content).map_err(|e| format!("Error guardando session.json: {e}"))?;
         let _ = std::fs::remove_file(&tmp_path);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
 }
@@ -352,6 +378,15 @@ fn read_or_refresh_session_cache() -> CachedSession {
                             next.server_url = tu.to_string();
                         }
                     }
+                    if let Some(raw_rt) = map.get("refresh_token").and_then(|t| t.as_str()) {
+                        let dec = decrypt_token_from_storage(raw_rt);
+                        if !dec.is_empty() {
+                            next.refresh_token = Some(dec);
+                        }
+                    }
+                    next.access_expires_at = map.get("access_expires_at").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    next.oauth_client_id = map.get("oauth_client_id").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    next.auth_method = map.get("auth_method").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                     next.username = map.get("username").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                     next.email = map.get("email").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                     next.active_profile_name = map.get("active_profile_name").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
@@ -440,6 +475,13 @@ pub fn validate_token_security(raw_token: &str) -> Result<String, String> {
         }
         return Ok(clean);
     }
+    if clean.starts_with("kyo_link_") {
+        let suffix = &clean["kyo_link_".len()..];
+        if suffix.len() < 16 {
+            return Err("El Token de proyecto (kyo_link_...) está incompleto.".to_string());
+        }
+        return Ok(clean);
+    }
     if let Some(analysis) = analyze_token(&clean) {
         if analysis.alg.as_deref().map(|a| a.eq_ignore_ascii_case("none")).unwrap_or(false) {
             return Err("Token inseguro rechazado: algoritmo 'none' no permitido (RFC 7519).".to_string());
@@ -481,6 +523,10 @@ pub fn save_full_session_config(
 
         map.insert("token".to_string(), serde_json::Value::String(encrypted_token));
         map.remove("access_token");
+        map.remove("refresh_token");
+        map.remove("access_expires_at");
+        map.remove("oauth_client_id");
+        map.insert("auth_method".to_string(), serde_json::Value::String("manual".to_string()));
         if !trimmed_url.is_empty() {
             map.insert("server_url".to_string(), serde_json::Value::String(trimmed_url.clone()));
         }
@@ -520,6 +566,10 @@ pub fn save_full_session_config(
         let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
         if let Ok(mut guard) = lock.write() {
             guard.token = trimmed_token;
+            guard.refresh_token = None;
+            guard.access_expires_at = None;
+            guard.oauth_client_id = None;
+            guard.auth_method = Some("manual".to_string());
             if !trimmed_url.is_empty() {
                 guard.server_url = trimmed_url;
             } else if guard.server_url.is_empty() {
@@ -545,6 +595,92 @@ pub fn save_full_session_config(
     Ok(())
 }
 
+/// Guarda una sesión OAuth completa (access_token + refresh_token cifrados con DPAPI, expiración y cuenta).
+pub fn save_oauth_session(
+    access_token: &str,
+    refresh_token: Option<&str>,
+    access_expires_at: Option<&str>,
+    client_id: &str,
+    server_url: &str,
+    username: Option<&str>,
+    email: Option<&str>,
+) -> Result<(), String> {
+    let trimmed_token = sanitize_token(access_token);
+    let trimmed_url = server_url.trim().to_string();
+    let encrypted_token = encrypt_token_for_storage(&trimmed_token);
+
+    if let Some(session_file) = get_kyo_session_file_path() {
+        let mut map: serde_json::Map<String, serde_json::Value> = if session_file.is_file() {
+            std::fs::read_to_string(&session_file)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+
+        map.insert("token".to_string(), serde_json::Value::String(encrypted_token));
+        map.remove("access_token");
+        if let Some(rt) = refresh_token.map(sanitize_token).filter(|s| !s.is_empty()) {
+            map.insert(
+                "refresh_token".to_string(),
+                serde_json::Value::String(encrypt_token_for_storage(&rt)),
+            );
+        }
+        if let Some(exp) = access_expires_at.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            map.insert("access_expires_at".to_string(), serde_json::Value::String(exp.to_string()));
+        } else {
+            map.remove("access_expires_at");
+        }
+        map.insert("oauth_client_id".to_string(), serde_json::Value::String(client_id.to_string()));
+        map.insert("auth_method".to_string(), serde_json::Value::String("oauth".to_string()));
+        if !trimmed_url.is_empty() {
+            map.insert("server_url".to_string(), serde_json::Value::String(trimmed_url.clone()));
+        }
+        if let Some(u) = username.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            map.insert("username".to_string(), serde_json::Value::String(u.to_string()));
+        }
+        if let Some(e) = email.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            map.insert("email".to_string(), serde_json::Value::String(e.to_string()));
+        }
+        map.insert(
+            "updated_at".to_string(),
+            serde_json::json!(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            ),
+        );
+
+        write_json_atomic(&session_file, &serde_json::Value::Object(map).to_string())?;
+        let new_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
+
+        let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
+        if let Ok(mut guard) = lock.write() {
+            guard.token = trimmed_token;
+            if let Some(rt) = refresh_token.map(sanitize_token).filter(|s| !s.is_empty()) {
+                guard.refresh_token = Some(rt);
+            }
+            guard.access_expires_at = access_expires_at.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            guard.oauth_client_id = Some(client_id.to_string());
+            guard.auth_method = Some("oauth".to_string());
+            if !trimmed_url.is_empty() {
+                guard.server_url = trimmed_url;
+            }
+            if let Some(u) = username.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                guard.username = Some(u.to_string());
+            }
+            if let Some(e) = email.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                guard.email = Some(e.to_string());
+            }
+            guard.file_mtime = new_mtime;
+            guard.last_checked = Some(Instant::now());
+        }
+    }
+    Ok(())
+}
+
 /// Limpia la sesión de autenticación (elimina el token en memoria y en disco).
 pub fn clear_session_auth() -> Result<(), String> {
     if let Some(session_file) = get_kyo_session_file_path() {
@@ -553,18 +689,30 @@ pub fn clear_session_auth() -> Result<(), String> {
                 .ok()
                 .and_then(|c| serde_json::from_str(&c).ok())
                 .unwrap_or_default();
-            map.remove("token");
-            map.remove("access_token");
-            map.remove("username");
-            map.remove("email");
-            map.remove("active_profile_name");
-            map.remove("active_profile_id");
+            for key in [
+                "token",
+                "access_token",
+                "refresh_token",
+                "access_expires_at",
+                "oauth_client_id",
+                "auth_method",
+                "username",
+                "email",
+                "active_profile_name",
+                "active_profile_id",
+            ] {
+                map.remove(key);
+            }
             let _ = write_json_atomic(&session_file, &serde_json::Value::Object(map).to_string());
         }
         let new_mtime = std::fs::metadata(&session_file).and_then(|m| m.modified()).ok();
         let lock = SESSION_CACHE.get_or_init(|| RwLock::new(CachedSession::default()));
         if let Ok(mut guard) = lock.write() {
             guard.token.clear();
+            guard.refresh_token = None;
+            guard.access_expires_at = None;
+            guard.oauth_client_id = None;
+            guard.auth_method = None;
             guard.username = None;
             guard.email = None;
             guard.active_profile_name = None;
@@ -609,6 +757,26 @@ pub fn load_username() -> Option<String> {
 /// Recupera el correo de la cuenta guardado en session.json o caché en memoria.
 pub fn load_email() -> Option<String> {
     read_or_refresh_session_cache().email
+}
+
+/// Recupera el refresh token descifrado si la sesión usó OAuth.
+pub fn load_refresh_token() -> Option<String> {
+    read_or_refresh_session_cache().refresh_token
+}
+
+/// Recupera el client_id OAuth usado para la sesión actual.
+pub fn load_oauth_client_id() -> Option<String> {
+    read_or_refresh_session_cache().oauth_client_id
+}
+
+/// Recupera la fecha RFC3339 de expiración del access token OAuth.
+pub fn load_access_expires_at() -> Option<String> {
+    read_or_refresh_session_cache().access_expires_at
+}
+
+/// Recupera el método de autenticación ("oauth" o "manual").
+pub fn load_auth_method() -> Option<String> {
+    read_or_refresh_session_cache().auth_method
 }
 
 /// Obtiene el directorio de descargas predeterminado del sistema operativo.
@@ -802,6 +970,26 @@ pub fn analyze_token(raw: &str) -> Option<JwtAnalysis> {
                 None
             } else {
                 Some("El Token MCP parece estar incompleto o truncado.".to_string())
+            },
+        });
+    }
+
+    if trimmed.starts_with("kyo_link_") {
+        let suffix = &trimmed["kyo_link_".len()..];
+        let is_valid_link = suffix.len() >= 16
+            && suffix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        return Some(JwtAnalysis {
+            is_jwt: false,
+            is_expired: false,
+            expires_in_sec: Some(30 * 86400),
+            expiration_str: Some("Token de Proyecto (30 días · acotado al Espacio)".to_string()),
+            sub: None,
+            role: Some("project".to_string()),
+            alg: Some("PROJECT-LINK (SHA-256)".to_string()),
+            warning: if is_valid_link {
+                None
+            } else {
+                Some("El Token de proyecto (kyo_link_...) parece estar incompleto o truncado.".to_string())
             },
         });
     }
@@ -1287,6 +1475,10 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
     let mut is_token_visible = use_signal(|| false);
     let mut show_saved_badge = use_signal(|| false);
     let mut is_checking_health = use_signal(|| false);
+    let mut is_oauth_logging_in = use_signal(|| false);
+    let mut oauth_feedback = use_signal(|| Option::<(bool, String)>::None);
+    let mut auth_method_sig = use_signal(load_auth_method);
+    let mut access_exp_sig = use_signal(load_access_expires_at);
 
     let state = sidecar_state.read().clone();
     let (dot_class, text_class, badge_class) = state.status.color_classes();
@@ -1335,6 +1527,8 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
         let t_val = token_input.read().clone();
         let u_val = upstream_input.read().clone();
         if let Ok(()) = save_auth_config(&t_val, &u_val) {
+            auth_method_sig.set(Some("manual".to_string()));
+            access_exp_sig.set(None);
             show_saved_badge.set(true);
             dioxus::prelude::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
@@ -1342,6 +1536,41 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
             });
             do_check_health();
         }
+    };
+
+    let mut do_oauth_login = move || {
+        let u_val = upstream_input.peek().clone();
+        is_oauth_logging_in.set(true);
+        oauth_feedback.set(None);
+        dioxus::prelude::spawn(async move {
+            match crate::oauth::browser_login(&u_val).await {
+                Ok(outcome) => {
+                    token_input.set(outcome.tokens.access_token.clone());
+                    auth_method_sig.set(Some("oauth".to_string()));
+                    access_exp_sig.set(outcome.tokens.expires_at.clone());
+                    let msg = outcome
+                        .email
+                        .map(|e| format!("Sesión iniciada como {e}"))
+                        .unwrap_or_else(|| "Sesión OAuth iniciada correctamente.".to_string());
+                    oauth_feedback.set(Some((true, msg)));
+                    do_check_health();
+                }
+                Err(e) => {
+                    oauth_feedback.set(Some((false, e)));
+                }
+            }
+            is_oauth_logging_in.set(false);
+        });
+    };
+
+    let mut do_oauth_logout = move || {
+        token_input.set(String::new());
+        auth_method_sig.set(None);
+        access_exp_sig.set(None);
+        oauth_feedback.set(Some((true, "Sesión cerrada en Kyō Desktop.".to_string())));
+        dioxus::prelude::spawn(async move {
+            crate::oauth::logout_and_revoke().await;
+        });
     };
 
     rsx! {
@@ -1593,6 +1822,49 @@ pub fn SettingsModal(mut is_open: Signal<bool>) -> Element {
                                                     span { class: "text-zinc-400 text-[11px] block truncate", "Perfil activo: {pname}" }
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+
+                                // Sección: Sesión OAuth 2.1 + PKCE en Navegador
+                                div {
+                                    class: "p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 space-y-3",
+                                    div {
+                                        class: "flex items-center justify-between gap-2",
+                                        div {
+                                            span { class: "font-semibold text-zinc-200 text-xs block", "Sesión de Cuenta Kyō (OAuth 2.1 + PKCE)" }
+                                            span { class: "text-[11px] text-zinc-400", "Inicio de sesión en navegador con renovación automática." }
+                                        }
+                                        if auth_method_sig.read().as_deref() == Some("oauth") {
+                                            span {
+                                                class: "px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30",
+                                                "OAuth Activo"
+                                            }
+                                        }
+                                    }
+                                    div {
+                                        class: "flex flex-wrap items-center gap-2",
+                                        button {
+                                            class: "px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors cursor-pointer disabled:opacity-50",
+                                            disabled: *is_oauth_logging_in.read(),
+                                            onclick: move |_| do_oauth_login(),
+                                            if *is_oauth_logging_in.read() { "Esperando navegador..." } else if !token_input.read().trim().is_empty() { "Reconectar con Navegador" } else { "Iniciar sesión con Kyō (Navegador)" }
+                                        }
+                                        if !token_input.read().trim().is_empty() {
+                                            button {
+                                                class: "px-3 py-2 rounded-xl bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 border border-rose-500/30 font-medium text-xs transition-colors cursor-pointer",
+                                                onclick: move |_| do_oauth_logout(),
+                                                "Cerrar sesión"
+                                            }
+                                        }
+                                    }
+                                    if let Some(ref exp) = *access_exp_sig.read() {
+                                        p { class: "text-[10px] font-mono text-zinc-400", "Access token válido hasta: {exp}" }
+                                    }
+                                    if let Some((ok, ref msg)) = *oauth_feedback.read() {
+                                        p {
+                                            class: if ok { "text-[11px] text-emerald-400" } else { "text-[11px] text-rose-400" },
+                                            "{msg}"
                                         }
                                     }
                                 }

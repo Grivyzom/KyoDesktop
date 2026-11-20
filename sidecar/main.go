@@ -126,6 +126,13 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "mcp", "statusline", "hook":
+			os.Exit(runKyoCLISubcommand(os.Args[1:]))
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

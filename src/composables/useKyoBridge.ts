@@ -5,9 +5,13 @@ import {
   checkSidecarHealth,
   saveSessionConfig,
   getSessionConfig,
+  oauthLogin,
+  oauthRefresh,
+  oauthLogout,
   DEFAULT_MCP_SERVER_URL,
   type ConnectionStatus,
   type SidecarHealth,
+  type SessionConfig,
 } from '../lib/sidecarBridge';
 import {
   probeMcpConnection,
@@ -30,6 +34,10 @@ const jwtToken = ref<string>('');
 const latencyMs = ref<number | null>(null);
 const lastProbeResult = ref<ConnectionProbeResult | null>(null);
 const isVerifying = ref<boolean>(false);
+const isLoggingIn = ref<boolean>(false);
+const hasRefreshToken = ref<boolean>(false);
+const accessExpiresAt = ref<string | null>(null);
+const authMethod = ref<string | null>(null);
 const isInitialized = ref(false);
 
 // Contador para ignorar respuestas obsoletas de refreshHealth concurrentes (M4)
@@ -117,8 +125,27 @@ export function useKyoBridge() {
 
     // 2. Si no hay sidecar o no responde, sondeo activo contra la aplicación web / endpoint MCP remoto
     healthData.value = null;
-    const probe = await probeMcpConnection(urlToTest, tokenToTest, 4000, forceRefresh);
+    let probe = await probeMcpConnection(urlToTest, tokenToTest, 4000, forceRefresh);
     if (currentRequestId !== healthRequestId) { isVerifying.value = false; return probe; }
+
+    // Si el access token OAuth fue rechazado (401) y hay refresh token, renovar automáticamente una vez
+    if (
+      probe.status === 'invalid_token' &&
+      hasRefreshToken.value &&
+      targetToken === undefined
+    ) {
+      try {
+        const refreshed = await oauthRefresh(urlToTest);
+        applySessionConfig(refreshed);
+        if (refreshed.token) {
+          invalidateProbeCache();
+          probe = await probeMcpConnection(urlToTest, refreshed.token, 4000, true);
+          if (currentRequestId !== healthRequestId) { isVerifying.value = false; return probe; }
+        }
+      } catch {
+        // Si falla el refresh, reportar el error original
+      }
+    }
 
     lastProbeResult.value = probe;
     latencyMs.value = probe.reachable ? probe.latencyMs : null;
@@ -147,6 +174,31 @@ export function useKyoBridge() {
     return probe;
   }
 
+  function applySessionConfig(config: SessionConfig) {
+    if (config.token !== undefined) {
+      jwtToken.value = config.token || '';
+    }
+    if (config.server_url) {
+      serverUrl.value = config.server_url;
+    }
+    if (config.active_profile_id !== undefined) {
+      activeProfileId.value = config.active_profile_id || null;
+    }
+    hasRefreshToken.value = Boolean(config.has_refresh_token);
+    accessExpiresAt.value = config.access_expires_at ?? null;
+    authMethod.value = config.auth_method ?? null;
+    if (config.username || config.email) {
+      accountInfo.value = {
+        id: accountInfo.value?.id || '',
+        username: config.username || '',
+        name: config.username || '',
+        email: config.email || '',
+      };
+    } else if (!config.token) {
+      accountInfo.value = null;
+    }
+  }
+
   async function initBridge() {
     if (isInitialized.value) return;
     isInitialized.value = true;
@@ -154,23 +206,7 @@ export function useKyoBridge() {
     // 1. Cargar configuración de sesión almacenada en Rust
     try {
       const config = await getSessionConfig();
-      if (config.token) {
-        jwtToken.value = config.token;
-      }
-      if (config.server_url) {
-        serverUrl.value = config.server_url;
-      }
-      if (config.active_profile_id) {
-        activeProfileId.value = config.active_profile_id;
-      }
-      if (config.username || config.email) {
-        accountInfo.value = {
-          id: '',
-          username: config.username || '',
-          name: config.username || '',
-          email: config.email || '',
-        };
-      }
+      applySessionConfig(config);
     } catch {
       // Ignorar si aún no hay configuración
     }
@@ -298,6 +334,46 @@ export function useKyoBridge() {
     await refreshHealth(serverUrl.value, sanitized, true);
   }
 
+  async function loginWithBrowser(targetUrl?: string): Promise<{ success: boolean; message: string }> {
+    const urlCheck = validateServerUrl(targetUrl || serverUrl.value);
+    if (!urlCheck.valid) {
+      return { success: false, message: urlCheck.error || 'URL de servidor inválida.' };
+    }
+    isLoggingIn.value = true;
+    try {
+      const cfg = await oauthLogin(urlCheck.normalizedUrl);
+      applySessionConfig(cfg);
+      invalidateProbeCache();
+      await refreshHealth(urlCheck.normalizedUrl, cfg.token || '', true);
+      return {
+        success: true,
+        message: cfg.email
+          ? `Sesión iniciada como ${cfg.email}.`
+          : 'Sesión OAuth iniciada correctamente.',
+      };
+    } catch (err: unknown) {
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      isLoggingIn.value = false;
+    }
+  }
+
+  async function logoutSession(): Promise<void> {
+    await oauthLogout();
+    jwtToken.value = '';
+    hasRefreshToken.value = false;
+    accessExpiresAt.value = null;
+    authMethod.value = null;
+    accountInfo.value = null;
+    availableProfiles.value = [];
+    activeProfileId.value = null;
+    invalidateProbeCache();
+    await refreshHealth(serverUrl.value, '', true);
+  }
+
   return {
     sidecarPort,
     status,
@@ -310,6 +386,10 @@ export function useKyoBridge() {
     lastProbeResult,
     tokenValidation,
     isVerifying,
+    isLoggingIn,
+    hasRefreshToken,
+    accessExpiresAt,
+    authMethod,
     accountInfo,
     availableProfiles,
     activeProfileId,
@@ -319,5 +399,7 @@ export function useKyoBridge() {
     refreshHealth,
     updateToken,
     saveConnectionSettings,
+    loginWithBrowser,
+    logoutSession,
   };
 }

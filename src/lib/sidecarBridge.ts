@@ -28,6 +28,9 @@ export interface SessionConfig {
   username?: string | null;
   email?: string | null;
   updated_at?: number | null;
+  has_refresh_token?: boolean;
+  access_expires_at?: string | null;
+  auth_method?: string | null;
 }
 
 /**
@@ -135,4 +138,29 @@ export async function getSessionToken(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Inicia sesión nativa con Kyō mediante OAuth 2.1 + PKCE en navegador (loopback 127.0.0.1).
+ */
+export async function oauthLogin(serverUrl?: string): Promise<SessionConfig> {
+  return await invoke<SessionConfig>('oauth_login', {
+    serverUrl: serverUrl ?? null,
+  });
+}
+
+/**
+ * Renueva el access token OAuth usando el refresh token almacenado en Rust.
+ */
+export async function oauthRefresh(serverUrl?: string): Promise<SessionConfig> {
+  return await invoke<SessionConfig>('oauth_refresh', {
+    serverUrl: serverUrl ?? null,
+  });
+}
+
+/**
+ * Cierra la sesión actual, limpia session.json y revoca el token en el servidor.
+ */
+export async function oauthLogout(): Promise<void> {
+  await invoke('oauth_logout');
 }
